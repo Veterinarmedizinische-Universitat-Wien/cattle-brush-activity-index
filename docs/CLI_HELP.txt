@@ -1,0 +1,25 @@
+usage: brush_rotation_activity_index.py [-h] --input INPUT --output OUTPUT
+                                        [--roi-preset {44,60,A,B,C,D,E,rpi cam}]
+                                        [--experiment-name EXPERIMENT_NAME]
+                                        [--require-dvr-timestamps]
+                                        [--no-annotated-video]
+                                        [--no-hour-plots] [--show-roi-preview]
+                                        [--no-roi-preview]
+
+Detect mechanical cattle-brush rotation from fixed-camera video using the
+activity-index pipeline used in the associated study.
+
+options:
+  -h, --help            show this help message and exit
+  --input INPUT         Directory containing input video files.
+  --output OUTPUT       Base directory for analysis outputs.
+  --roi-preset {44,60,A,B,C,D,E,rpi cam}
+                        ROI preset to use (default: E).
+  --experiment-name EXPERIMENT_NAME
+                        Name of the output subdirectory.
+  --require-dvr-timestamps
+                        Skip files that do not contain usable DVR timestamps.
+  --no-annotated-video  Do not write annotated video outputs.
+  --no-hour-plots       Do not write hourly signal plots.
+  --show-roi-preview    Display ROI preview windows during processing.
+  --no-roi-preview      Do not save ROI preview images.

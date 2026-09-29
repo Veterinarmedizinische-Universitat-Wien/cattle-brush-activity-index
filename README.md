@@ -1,27 +1,59 @@
-# Cattle-brush mechanical-rotation activity index
+# Cattle Brush Activity Index for Mechanical Rotation Detection
 
 Research code for detecting **mechanical rotation of cattle grooming brushes** from fixed-camera video using a lightweight CPU-based activity index.
 
-The code measures **brush motion**, not direct cow–brush contact and not individual cow identity. Used alone, its output is therefore suitable for brush/resource-level rotation monitoring. Individual-level brush-use monitoring would require a separate animal-identification/contact layer.
+The code measures **brush motion**, not direct cow–brush contact and not individual cow identity. Used alone, its output therefore represents brush/resource-level rotation. Individual-level brush-use monitoring would require a separate animal-identification/contact layer.
 
-## What this release contains
-
-The repository contains the cross-farm analysis version selected for manuscript release. The public script preserves the supplied detection logic and study parameter defaults. The only structural change is that machine-specific input/output paths were replaced with command-line arguments.
-
-Main script:
+## Repository structure
 
 ```text
-src/brush_rotation_activity_index.py
+src/
+  brush_rotation_activity_index.py   # detection pipeline and analysis orchestration
+  config.py                          # paths, ROI presets, parameters, output switches
+  io_utils.py                        # video/timestamp/filename/file-system utilities
+examples/
+  input/                             # local test video location; videos are git-ignored
+  output/                            # local generated output; includes report schema only
+docs/
+  CONFIGURATION.md
+  METHODS_TO_CODE_MAP.md
+  RELEASE_CHECKLIST.md
 ```
+
+The detector itself remains in one main script so that the manuscript workflow can be followed from signal extraction through post-processing. Configuration and input/timestamp utilities are separated only for readability; the detection thresholds and post-processing logic are unchanged by this refactor.
+
+## Quick start
+
+1. Install the Python dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+2. Install FFmpeg separately and confirm that `ffmpeg` and `ffprobe` are available on the command line if DVR metadata extraction is required.
+
+3. Edit `src/config.py`:
+   - `input_folder`
+   - `base_output_folder`
+   - `ROI` / ROI preset
+   - optional output switches
+
+4. Run:
+
+```bash
+python src/brush_rotation_activity_index.py
+```
+
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the timing modes and filename formats.
 
 ## Processing sequence
 
-1. Read video and reconstruct timestamps from DVR metadata when available, with filename timestamps as a fallback.
+1. Read video and obtain timing information.
 2. Apply the predefined brush ROI and image preprocessing.
 3. Calculate frame-to-frame absolute pixel differences and sum them within the ROI.
 4. Apply log transformation and 5th–95th percentile normalization.
 5. Smooth the normalized signal with a 5-frame moving average.
-6. Build a separate threshold-only signal by suppressing isolated short high-amplitude spikes.
+6. Build a threshold-only signal by suppressing isolated short high-amplitude spikes.
 7. Divide the signal into 10-min segments and use the 99.5th percentile as the segment reference.
 8. Apply the study-specific dynamic multiplier (0.50 for reference values >= 0.90; 0.62 otherwise).
 9. Detect candidate rotation intervals on the **original smoothed normalized signal**.
@@ -29,69 +61,28 @@ src/brush_rotation_activity_index.py
 
 See [`docs/METHODS_TO_CODE_MAP.md`](docs/METHODS_TO_CODE_MAP.md) for the function-level mapping.
 
-## Requirements
-
-The manuscript implementation used Python 3.12.4. The supplied code requires:
-
-- OpenCV (`opencv-python`)
-- NumPy
-- pandas
-- Matplotlib
-- tqdm
-- openpyxl (for Excel output)
-- FFmpeg/ffprobe as a system dependency for DVR metadata extraction
-
-Install the Python dependencies with:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-Install FFmpeg separately using the package manager appropriate for your operating system, then confirm that both `ffmpeg` and `ffprobe` are available on the command line.
-
-## Running the analysis
-
-Example:
-
-```bash
-python src/brush_rotation_activity_index.py \
-  --input /path/to/input_videos \
-  --output /path/to/results \
-  --roi-preset E
-```
-
-On Windows PowerShell, the same command can be entered on one line:
-
-```powershell
-python src/brush_rotation_activity_index.py --input "C:\path\to\videos" --output "C:\path\to\results" --roi-preset E
-```
-
-Show all options:
-
-```bash
-python src/brush_rotation_activity_index.py --help
-```
-
-### Important command-line options
-
-- `--roi-preset`: selects one of the study ROI presets defined in the script.
-- `--require-dvr-timestamps`: excludes files for which DVR timestamps cannot be extracted.
-- `--no-annotated-video`: disables annotated video export.
-- `--no-hour-plots`: disables hourly signal plots.
-- `--show-roi-preview`: displays the ROI preview during processing.
-- `--no-roi-preview`: disables saved ROI preview images.
-
-## ROI configuration
-
-The included ROI coordinates are **study/camera-specific** and should not be assumed to transfer to a new camera position. For a new deployment, define a polygon that encloses the full brush movement while minimizing unrelated background motion.
-
-The study presets are stored in `ROI_ALL` near the beginning of the main script. For exact reproduction of a study recording, select the preset corresponding to that recording. For a new setup, add a new ROI polygon and validate it using the saved preview image before running a long analysis.
-
 ## Timestamp handling
 
-The script first attempts to recover DVR timestamps from non-video streams using FFmpeg/ffprobe. If DVR timestamps are unavailable, it attempts to infer the recording start time from the filename and constructs timestamps from the reported frame rate. Set `--require-dvr-timestamps` when fallback timestamps should not be accepted.
+Timing is resolved in this order:
 
-The script also records coarse diagnostics for dropped-frame-like gaps, duplicate-frame-like intervals, clock jumps, and timing jitter. These diagnostics are intended as acquisition-quality checks; they do not replace manual verification of problematic recordings.
+1. **DVR metadata** — absolute date/time reconstructed from the supported DVR metadata stream.
+2. **Recognised filename timestamp** — absolute start time parsed from the filename, with frame times generated from decoded FPS.
+3. **Relative time** — if neither source exists and `ALLOW_STANDALONE_RELATIVE_TIME = True`, that video is processed independently from `00:00:00`.
+
+Relative-time videos are **never combined with each other or with the absolute-time hourly sequence**. Each receives its own output folder and its own rotation/timestamp/hour reports. Internally the relative mode uses `1970-01-01 00:00:00 UTC` only as a computational anchor; user-facing output is formatted as elapsed time.
+
+Supported filename timestamp patterns include:
+
+```text
+Event20240425123045.mp4
+20240425123045.mp4
+25.04.2024-123045.mp4
+25.04.2024_123045.mp4
+2024-04-25_12-30-45.mp4
+2024_04_25_12_30_45.mp4
+```
+
+If `REQUIRE_DVR_TIMESTAMPS = True`, non-DVR timing sources are rejected.
 
 ## Main study parameter defaults
 
@@ -122,34 +113,50 @@ The script also records coarse diagnostics for dropped-frame-like gaps, duplicat
 | Short-bout criterion | <4 s |
 | Maximum retained bout duration | 2000 s |
 
-These are the defaults implemented in the supplied analysis version. They should not be presented as universally optimal values for other camera/brush configurations without external validation.
+These are the defaults implemented in the supplied analysis version and should not be assumed to be universally optimal for other camera/brush configurations without validation.
 
 ## Outputs
 
-For each run, the script can generate:
+### Absolute-time/DVR or filename workflow
 
-- `rotation_summary.xlsx` — detected rotation intervals and durations
+The original hourly workflow can generate:
+
+- `rotation_summary.xlsx` — detected rotation intervals, source file(s), timestamp source, and duration
 - `hour_bucket_summary.xlsx` — hourly signal/threshold summary
-- `file_timestamp_report.xlsx` — timestamp source and video metadata summary
-- `timestamp_gap_report.csv` — timestamp anomalies, when detected
+- `file_timestamp_report.xlsx` — timestamp source and basic video metadata
+- `timestamp_gap_report.csv` — timing anomalies when detected
 - `plots/` — hourly normalized motion/threshold plots
 - `previews/` — ROI preview images
-- `annotated_videos/` — optional videos showing ROI, signal/threshold information, time, and detected rotation periods
+- `annotated_videos/` — optional annotated videos
+
+### Standalone relative-time workflow
+
+Every untimestamped video receives a separate directory under:
+
+```text
+standalone_relative/<source_video_name>/
+```
+
+with its own `rotation_summary.xlsx`, `hour_bucket_summary.xlsx`, `file_timestamp_report.xlsx`, plot, ROI preview, and optional annotated video. Relative bout times are written as elapsed `HH:MM:SS.sss` values.
+
+## Example data and large files
+
+Large input videos and annotated output videos are intentionally **not stored in this GitHub repository**. The `examples/` folder documents how to run a local test and includes a header-only CSV showing the `rotation_summary` schema.
+
+The study videos are planned for public release through the university/institutional data repository. The final data DOI or URL should be added here and to the manuscript data-availability statement once available.
+
+A short annotated demonstration output video can instead be supplied with the manuscript as supplementary material (for example, **Supplementary Video S1**) and cited from the relevant Methods/Supplementary Materials text.
 
 ## Reproducibility notes
 
-The repository intentionally retains the preprocessing and post-processing steps implemented in the supplied study code. These include low-light CLAHE, LAB/intensity preprocessing, frame blending, threshold-only spike suppression, amplitude/context filters, short-bout filtering, gap merging, and a maximum-duration filter.
+The repository intentionally retains the preprocessing and post-processing steps implemented in the study code, including low-light CLAHE, LAB/intensity preprocessing, previous-frame blending, threshold-only spike suppression, amplitude/context filters, short-bout filtering, gap merging, and the maximum-duration filter.
 
-Before manuscript submission or public release, confirm that the Methods describe all algorithmic steps that materially affect the final rotation intervals. The repository should be tagged at the exact commit used for the final reported results.
-
-## Data
-
-Raw farm video is not included in this repository. If example data can be shared, add a small de-identified sample or a derived signal file that allows users to verify installation and reproduce one example output without redistributing the full study recordings.
+Before the final manuscript/software release, confirm that the Methods describe all algorithmic steps that materially affect the final rotation intervals and tag the exact commit used for the reported results.
 
 ## Citation
 
-A `CITATION.cff` file is included. Update it with the final article title, DOI, repository URL, and/or archived software DOI once available.
+A `CITATION.cff` file is included. Add the final article title/DOI and archived software DOI when available.
 
 ## License
 
-No software license has been assigned in this draft repository. Choose and add an appropriate license before making the repository public.
+No software license has been assigned in this draft repository. Add the agreed license before public release.

@@ -1,26 +1,31 @@
 # ============================================================
-# CATTLE-BRUSH MECHANICAL-ROTATION ACTIVITY INDEX
-# PUBLIC RESEARCH RELEASE
-# ============================================================
-# This script implements the cross-farm activity-index pipeline used for
-# mechanical cattle-brush rotation detection. The detection logic and study
-# parameter defaults are preserved from the supplied analysis script.
+# FULLY PATCHED CROSS-FARM CODE
+# CONTINUOUS HOUR SIGNAL + LEGACY-STYLE DETECTION/POSTPROCESSING
+# USING ROBUST NORMALIZED SIGNAL FOR CROSS-FARM TRANSFER
+# + DVR TIMESTAMPS FOR PLOTTING / EXPORT / ANNOTATION
 #
-# Core sequence:
-# 1) extract a continuous raw motion signal from a predefined brush ROI;
-# 2) apply robust log/percentile normalization and temporal smoothing;
-# 3) build a threshold-only signal with isolated short spikes suppressed;
-# 4) estimate segment-specific thresholds using a high-percentile reference;
-# 5) apply final detection to the original smoothed normalized signal; and
-# 6) apply the study post-processing rules to obtain rotation intervals.
+# ROBUST THRESHOLD PATCH
+# ----------------------
+# This version keeps your motion-difference logic intact, but makes
+# threshold determination robust against short extreme spikes.
+#
+# MAIN FIXES
+# ----------
+# 1) Compute the original raw motion signal exactly as before.
+# 2) Normalize and smooth exactly as before.
+# 3) Build a THRESHOLD-ONLY signal where isolated short spikes are suppressed.
+# 4) Compute segment thresholds from that threshold-only signal.
+# 5) Use a HIGH PERCENTILE segment reference instead of raw segment max.
+# 6) Run final detection on the ORIGINAL smoothed signal.
+#
+# RESULT
+# ------
+# Short lone spikes (< ~10 sec) no longer inflate thresholds for an
+# entire segment, while the original signal remains fully available
+# for bout detection.
 # ============================================================
 
 import os
-import re
-import json
-import argparse
-import tempfile
-import subprocess
 from collections import defaultdict
 
 import cv2
@@ -28,119 +33,67 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from datetime import datetime, timedelta
 
-# ============================================================
-# EXPERIMENT LABEL
-# ============================================================
+from config import (
+    ALLOW_STANDALONE_RELATIVE_TIME,
+    BLEND_ALPHA,
+    CLAHE_CLIP_LIMIT,
+    CLAHE_DARK_MEAN_THRESHOLD,
+    CLAHE_ONLY_IF_DARK,
+    CLAHE_TILE_GRID,
+    DOWNSCALE,
+    FRAME_SKIP_ANNOTATION,
+    LEGACY_CONTEXT_MAX_PIXEL,
+    LEGACY_CONTEXT_WINDOW_MINUTES,
+    LEGACY_HIGH_PCT,
+    LEGACY_LOW_PCT,
+    LEGACY_PIXEL_THRESHOLD_HIGH,
+    LEGACY_PIXEL_THRESHOLD_LOW,
+    LEGACY_SEGMENT_MAX_SWITCH,
+    LEGACY_SEGMENT_MINUTES,
+    MAX_BOUT_SECONDS,
+    MERGE_CLOSE_BOUTS,
+    MERGE_GAP_SECONDS,
+    MIN_BOUT_SECONDS,
+    OUTPUT_CODEC,
+    OUTPUT_EXT,
+    PRINT_HOUR_SIGNAL_STATS,
+    PRINT_THRESHOLD_SIGNAL_STATS,
+    RELATIVE_TIME_ANCHOR,
+    REQUIRE_DVR_TIMESTAMPS,
+    ROBUST_NORM_HIGH_PCT,
+    ROBUST_NORM_LOW_PCT,
+    ROI,
+    SAVE_ROI_PREVIEW,
+    SHORT_BOUT_SECONDS,
+    SHORT_BOUT_WINDOW_SECONDS,
+    SHOW_ROI_PREVIEW,
+    SMOOTH_WINDOW,
+    THRESHOLD_REF_PERCENTILE,
+    THRESHOLD_SPIKE_HIGH_Q,
+    THRESHOLD_SPIKE_ISOLATION_GAP_SECONDS,
+    THRESHOLD_SPIKE_MIN_SECONDS,
+    USE_CLAHE,
+    USE_LOG_COMPRESSION,
+    USE_THRESHOLD_SPIKE_SUPPRESSION,
+    WRITE_ANNOTATED_VIDEO,
+    WRITE_HOUR_PLOTS,
+    annotated_video_folder,
+    input_folder,
+    output_folder,
+    plot_folder,
+    preview_folder,
+)
+from io_utils import (
+    ensure_directories,
+    format_relative_timestamp,
+    get_clip_start_info,
+    is_video_file,
+    sanitize_filename,
+)
 
-EXPERIMENT_NAME = "legacy_continuous_hour_signal_cross_farm_normalized_v3_spike_robust_threshold"
-
-# ============================================================
-# ROI PRESETS
-# ============================================================
-
-ROI_ALL = {
-    #"A":  np.array([[740,500],[780,630],[940,540],[900,430]], dtype=np.int32),
-    "A":  np.array([[740,510],[770,620],[920,540],[880,450]], dtype=np.int32),    # 27-07-2024
-    #"B":  np.array([[380,320],[450,420],[580,350],[530,245]], dtype=np.int32),
-    "B":  np.array([[435,270],[470,370],[640,310],[600,210]], dtype=np.int32),    # 27-07-2024
-    #"C":  np.array([[590,190],[530,280],[670,360],[720,270]], dtype=np.int32),
-    "C":  np.array([[600,130],[590,230],[750,240],[760,140]], dtype=np.int32),    # 27-07-2024
-    #"D":  np.array([[820,190],[780,290],[920,360],[960,250]], dtype=np.int32),
-    "D":  np.array([[900,110],[860,210],[1000,280],[1040,170]], dtype=np.int32),  # 27-07-2024
-    "E":  np.array([[660,300],[640,420],[790,440],[810,350]], dtype=np.int32),
-    "44": np.array([[700, 60],[700,180],[1210,180],[1210, 60]], dtype=np.int32),
-    "60": np.array([[1210,170],[1210, 50],[1600,170],[1600,290]], dtype=np.int32),
-    "rpi cam": np.array([[500,200],[500,230],[650,230],[650,200]], dtype=np.int32),
-}
-DEFAULT_ROI_PRESET = "E"
-ROI = ROI_ALL[DEFAULT_ROI_PRESET].copy()
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-FRAME_SKIP_ANNOTATION = 3
-DOWNSCALE = 0.5
-OUTPUT_CODEC = "mp4v"
-OUTPUT_EXT = ".mp4"
-
-WRITE_ANNOTATED_VIDEO = True
-WRITE_HOUR_PLOTS = True
-SHOW_ROI_PREVIEW = False
-SAVE_ROI_PREVIEW = True
-
-SUPPORTED_FORMATS = (".mp4", ".avi", ".mov", ".mkv", ".wmv", ".flv", ".mpeg", ".mpg")
-
-# Image preprocessing
-USE_CLAHE = True
-CLAHE_ONLY_IF_DARK = True
-CLAHE_DARK_MEAN_THRESHOLD = 80
-CLAHE_CLIP_LIMIT = 2.0
-CLAHE_TILE_GRID = (8, 8)
-BLEND_ALPHA = 0.6
-
-# Smoothing
-SMOOTH_WINDOW = 5
-
-# Robust normalization
-ROBUST_NORM_LOW_PCT = 5
-ROBUST_NORM_HIGH_PCT = 95
-USE_LOG_COMPRESSION = True
-
-# Legacy-style adaptive segment logic (on normalized signal)
-LEGACY_SEGMENT_MINUTES = 10
-LEGACY_SEGMENT_MAX_SWITCH = 0.90
-LEGACY_LOW_PCT = 0.62
-LEGACY_HIGH_PCT = 0.50
-
-# NEW: robust threshold reference
-THRESHOLD_REF_PERCENTILE = 99.5
-
-# NEW: spike suppression for threshold-only signal
-USE_THRESHOLD_SPIKE_SUPPRESSION = True
-THRESHOLD_SPIKE_MIN_SECONDS = 10.0
-THRESHOLD_SPIKE_HIGH_Q = 99.0
-THRESHOLD_SPIKE_ISOLATION_GAP_SECONDS = 5.0
-
-# Bout rules
-MIN_BOUT_SECONDS = 4
-MAX_BOUT_SECONDS = 2000
-
-# Legacy-style post-filters in NORMALIZED units
-LEGACY_PIXEL_THRESHOLD_LOW = 0.26
-LEGACY_PIXEL_THRESHOLD_HIGH = 0.40
-LEGACY_CONTEXT_WINDOW_MINUTES = 4
-LEGACY_CONTEXT_MAX_PIXEL = 0.45
-
-SHORT_BOUT_WINDOW_SECONDS = 40
-SHORT_BOUT_SECONDS = 4
-
-# Merge nearby bouts to reduce fragmentation
-MERGE_CLOSE_BOUTS = True
-MERGE_GAP_SECONDS = 2.0
-
-# Timestamp policy
-REQUIRE_DVR_TIMESTAMPS = False
-
-# Diagnostics
-PRINT_HOUR_SIGNAL_STATS = True
-PRINT_THRESHOLD_SIGNAL_STATS = True
-
-# ============================================================
-# RUNTIME PATHS
-# ============================================================
-#
-# Paths are configured from command-line arguments in configure_run().
-# This removes machine-specific paths while leaving the analysis logic unchanged.
-
-input_folder = None
-base_output_folder = None
-output_folder = None
-annotated_video_folder = None
-plot_folder = None
-preview_folder = None
+# Create the configured output directories once at startup.
+ensure_directories(output_folder, annotated_video_folder, plot_folder, preview_folder)
 
 rotation_data = []
 gap_report = []
@@ -148,355 +101,47 @@ hour_summary = []
 file_timestamp_report = []
 
 # ============================================================
-# GENERAL UTILITIES
+# INPUT GROUPING
 # ============================================================
-
-def is_video_file(name: str) -> bool:
-    return name.lower().endswith(SUPPORTED_FORMATS)
-
-def safe_run(cmd):
-    return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-
-def check_ffmpeg_available() -> bool:
-    try:
-        result = safe_run(["ffmpeg", "-version"])
-        return result.returncode == 0
-    except Exception:
-        return False
-
-FFMPEG_AVAILABLE = check_ffmpeg_available()
-
-def sanitize_filename(s: str) -> str:
-    return re.sub(r'[<>:"/\\|?*]+', "_", s)
-
-def frame_to_time(frame, fps):
-    total_seconds = int(frame / max(fps, 1e-6))
-    minutes, seconds = divmod(total_seconds, 60)
-    return f"{minutes}m {seconds}s"
-
-# ============================================================
-# FILENAME PARSING
-# ============================================================
-
-def parse_timestamp_from_filename(filename: str):
-    stem = os.path.splitext(os.path.basename(filename))[0]
-
-    m = re.search(r"Event(\d{14})", stem)
-    if m:
-        try:
-            return datetime.strptime(m.group(1), "%Y%m%d%H%M%S")
-        except Exception:
-            pass
-
-    candidates = []
-
-    m = re.search(r"(\d{2}\.\d{2}\.\d{4})[-_ ](\d{6})", stem)
-    if m:
-        candidates.append((" ".join(m.groups()), "%d.%m.%Y %H%M%S"))
-
-    for s in re.findall(r"(?<!\d)(\d{14})(?!\d)", stem):
-        candidates.append((s, "%Y%m%d%H%M%S"))
-
-    m = re.search(r"(\d{4}-\d{2}-\d{2})[-_ ](\d{2}-\d{2}-\d{2})", stem)
-    if m:
-        candidates.append((" ".join(m.groups()), "%Y-%m-%d %H-%M-%S"))
-
-    m = re.search(r"(\d{4})_(\d{2})_(\d{2})_(\d{2})_(\d{2})_(\d{2})", stem)
-    if m:
-        candidates.append(("".join(m.groups()), "%Y%m%d%H%M%S"))
-
-    m = re.search(r"(\d{2}\.\d{2}\.\d{4})_(\d{6})", stem)
-    if m:
-        candidates.append((" ".join(m.groups()), "%d.%m.%Y %H%M%S"))
-
-    for value, fmt in candidates:
-        try:
-            return datetime.strptime(value, fmt)
-        except Exception:
-            pass
-
-    return None
-
-# ============================================================
-# FFPROBE HELPERS
-# ============================================================
-
-def ffprobe_json(video_path):
-    if not FFMPEG_AVAILABLE:
-        return None
-
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-print_format", "json",
-        "-show_format",
-        "-show_streams",
-        video_path
-    ]
-    result = safe_run(cmd)
-    if result.returncode != 0:
-        return None
-
-    try:
-        return json.loads(result.stdout)
-    except Exception:
-        return None
-
-# ============================================================
-# DVR METADATA EXTRACTION
-# ============================================================
-
-def _build_datetime(date_obj, hour_val, minute_val, second_val, micro_val):
-    return datetime(
-        year=date_obj.year,
-        month=date_obj.month,
-        day=date_obj.day,
-        hour=hour_val,
-        minute=minute_val,
-        second=second_val,
-        microsecond=micro_val
-    )
-
-def reconstruct_dvr_timestamps(date_obj, time_fragments, fps):
-    timestamps = []
-
-    if not time_fragments:
-        return timestamps
-
-    frame_interval = timedelta(seconds=1.0 / fps) if fps > 0 else timedelta(seconds=1 / 30)
-
-    for frag in time_fragments:
-        parts = frag.split(":")
-        if len(parts) != 3:
-            continue
-
-        try:
-            h = int(parts[0])
-            m = int(parts[1])
-            sec_float = float(parts[2])
-
-            sec = int(sec_float)
-            micros = int(round((sec_float - sec) * 1_000_000))
-
-            if micros >= 1_000_000:
-                sec += 1
-                micros -= 1_000_000
-
-            ts = _build_datetime(date_obj, h, m, sec, micros)
-
-            if timestamps and ts < timestamps[-1]:
-                ts = timestamps[-1] + frame_interval
-
-            timestamps.append(ts)
-
-        except Exception:
-            continue
-
-    return timestamps
-
-def extract_dvr_metadata_from_stream(video_path, stream_index, fps):
-    if not FFMPEG_AVAILABLE:
-        return None
-
-    tmp = tempfile.NamedTemporaryFile(delete=False).name
-    try:
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", video_path,
-            "-map", f"0:{stream_index}",
-            "-c", "copy",
-            "-f", "data",
-            tmp
-        ]
-        result = safe_run(cmd)
-
-        if result.returncode != 0:
-            return None
-        if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-            return None
-
-        with open(tmp, "rb") as f:
-            data = f.read().decode(errors="ignore")
-
-        id_match = re.search(r"#(\d+)-(\d+):\d+:\d+(?:\.\d+)?", data)
-        camera_id = int(id_match.group(1)) if id_match else None
-        overlay_id = None
-
-        date_match = re.search(r"\((\d{4}/\d+/\d+)\)", data)
-        if not date_match:
-            return None
-
-        date_obj = datetime.strptime(date_match.group(1), "%Y/%m/%d").date()
-        time_fragments = re.findall(r"#\d+-((?:\d+:){2}\d+\.\d+)", data)
-        if not time_fragments:
-            return None
-
-        timestamps = reconstruct_dvr_timestamps(date_obj, time_fragments, fps)
-        if len(timestamps) == 0:
-            return None
-
-        return {
-            "camera_id": camera_id,
-            "overlay_id": overlay_id,
-            "timestamps": timestamps
-        }
-
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-
-def extract_dvr_metadata(video_path, fps):
-    probe = ffprobe_json(video_path)
-    if probe is None:
-        return None
-
-    streams = probe.get("streams", [])
-    candidate_indices = []
-
-    for s in streams:
-        idx = s.get("index")
-        ctype = s.get("codec_type", "")
-        if idx is None:
-            continue
-        if ctype != "video":
-            candidate_indices.append(idx)
-
-    if not candidate_indices:
-        candidate_indices = [s.get("index") for s in streams if s.get("index") not in (None, 0)]
-
-    for idx in candidate_indices:
-        meta = extract_dvr_metadata_from_stream(video_path, idx, fps)
-        if meta is not None:
-            return meta
-
-    return None
-
-# ============================================================
-# TIMESTAMP DECISION
-# ============================================================
-
-def build_timestamps_from_start(start_dt, fps, total_frames):
-    if start_dt is None or total_frames <= 0:
-        return []
-    if fps <= 0:
-        fps = 30.0
-    return [start_dt + timedelta(seconds=i / fps) for i in range(total_frames)]
-
-def get_video_timestamps_and_ids(video_path, fps, total_frames):
-    meta = extract_dvr_metadata(video_path, fps)
-
-    if meta and meta.get("timestamps"):
-        timestamps = meta["timestamps"]
-        print(f"Using DVR metadata timestamps: {os.path.basename(video_path)}")
-
-        if len(timestamps) >= total_frames:
-            timestamps = timestamps[:total_frames]
-        else:
-            print(
-                f"Warning: DVR timestamps shorter than frame count "
-                f"({len(timestamps)} < {total_frames}) in {os.path.basename(video_path)}"
-            )
-            if len(timestamps) >= 2:
-                step = timestamps[-1] - timestamps[-2]
-                if step.total_seconds() <= 0:
-                    step = timedelta(seconds=1 / max(fps, 1e-6))
-            else:
-                step = timedelta(seconds=1 / max(fps, 1e-6))
-
-            extended = list(timestamps)
-            while len(extended) < total_frames:
-                extended.append(extended[-1] + step)
-            timestamps = extended
-
-        return {
-            "timestamps": timestamps,
-            "camera_id": meta.get("camera_id"),
-            "stream_id": None,
-            "overlay_id": meta.get("overlay_id"),
-            "timestamp_source": "dvr"
-        }
-
-    fname = parse_timestamp_from_filename(os.path.basename(video_path))
-    if fname:
-        print(f"Using filename timestamps: {os.path.basename(video_path)}")
-        return {
-            "timestamps": build_timestamps_from_start(fname, fps, total_frames),
-            "camera_id": None,
-            "stream_id": None,
-            "overlay_id": None,
-            "timestamp_source": "filename"
-        }
-
-    print(f"No DVR metadata found and filename timestamp missing: {os.path.basename(video_path)}")
-    return None
-
-def get_video_basic_info(video_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return None
-
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30.0
-
-    length = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-
-    if length <= 0 or frame_width <= 0 or frame_height <= 0:
-        return None
-
-    return {
-        "fps": float(fps),
-        "length": int(length),
-        "frame_width": int(frame_width),
-        "frame_height": int(frame_height),
-    }
-
-def get_clip_start_info(video_path):
-    basic = get_video_basic_info(video_path)
-    if basic is None:
-        return None
-
-    ts_info = get_video_timestamps_and_ids(video_path, basic["fps"], basic["length"])
-    if ts_info is None or len(ts_info["timestamps"]) == 0:
-        return None
-
-    if REQUIRE_DVR_TIMESTAMPS and ts_info["timestamp_source"] != "dvr":
-        print(f"Skipping non-DVR timestamp file: {os.path.basename(video_path)}")
-        return None
-
-    return {
-        "video_path": video_path,
-        "video_file": os.path.basename(video_path),
-        "fps": basic["fps"],
-        "length": basic["length"],
-        "frame_width": basic["frame_width"],
-        "frame_height": basic["frame_height"],
-        "start_timestamp": ts_info["timestamps"][0],
-        "timestamps": ts_info["timestamps"],
-        "timestamp_source": ts_info["timestamp_source"],
-        "camera_id": ts_info["camera_id"],
-        "stream_id": ts_info["stream_id"],
-        "overlay_id": ts_info["overlay_id"],
-    }
 
 def build_hour_buckets(folder: str):
+    """
+    Build the original absolute-time hour buckets and keep untimestamped videos
+    separate for standalone relative-time processing.
+
+    Absolute-time videos (DVR or filename timestamp) retain the original workflow.
+    Relative-time videos are returned separately and are never combined together.
+    """
     buckets = defaultdict(list)
+    relative_videos = []
 
-    for file in sorted(os.listdir(folder)):
-        if not is_video_file(file):
-            continue
+    video_files = [
+        file for file in sorted(os.listdir(folder))
+        if is_video_file(file)
+    ]
 
+    allow_relative_time = (
+        ALLOW_STANDALONE_RELATIVE_TIME
+        and not REQUIRE_DVR_TIMESTAMPS
+    )
+
+    for file in video_files:
         video_path = os.path.join(folder, file)
-        start_info = get_clip_start_info(video_path)
+        start_info = get_clip_start_info(
+            video_path,
+            allow_relative_time=allow_relative_time
+        )
+
         if start_info is None:
             print(f"Skipping (no valid timestamp): {file}")
+            continue
+
+        if start_info["timestamp_source"] == "relative":
+            print(
+                f"Standalone relative-time analysis selected: {file} "
+                f"(starts at 00:00:00)"
+            )
+            relative_videos.append(start_info)
             continue
 
         ts = start_info["start_timestamp"]
@@ -514,7 +159,7 @@ def build_hour_buckets(folder: str):
     for hour_key in buckets:
         buckets[hour_key].sort(key=lambda x: x["start_timestamp"])
 
-    return buckets
+    return buckets, relative_videos
 
 # ============================================================
 # DIAGNOSTICS
@@ -1258,7 +903,9 @@ def save_hour_plot_legacy(
     threshold_curve,
     rotation_periods,
     out_path,
-    threshold_signal=None
+    threshold_signal=None,
+    source_label=None,
+    relative_time=False
 ):
     if len(smoothed_diffs) == 0 or len(combined_timestamps) == 0:
         return
@@ -1283,7 +930,13 @@ def save_hour_plot_legacy(
 
     num_ticks = min(12, n)
     tick_idx = np.linspace(0, n - 1, num_ticks).astype(int)
-    tick_labels = [combined_timestamps[i].strftime("%H:%M:%S") for i in tick_idx]
+    if relative_time:
+        tick_labels = [
+            format_relative_timestamp(combined_timestamps[i], include_milliseconds=False)
+            for i in tick_idx
+        ]
+    else:
+        tick_labels = [combined_timestamps[i].strftime("%H:%M:%S") for i in tick_idx]
     plt.xticks(tick_idx, tick_labels, rotation=45)
 
     for idx, (start, end) in enumerate(rotation_periods):
@@ -1296,9 +949,16 @@ def save_hour_plot_legacy(
                 label="Rotation Period" if idx == 0 else ""
             )
 
-    plt.xlabel("Real Time")
+    plt.xlabel("Relative Time" if relative_time else "Real Time")
     plt.ylabel("Normalized motion signal")
-    plt.title(f"Hourly movement curve - {hour_key.strftime('%Y-%m-%d %H:00')}")
+
+    if relative_time:
+        title = "Movement curve - relative time"
+    else:
+        title = f"Hourly movement curve - {hour_key.strftime('%Y-%m-%d %H:00')}"
+    if source_label:
+        title += f"\nSource: {source_label}"
+    plt.title(title)
     plt.legend()
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
@@ -1422,7 +1082,10 @@ def write_annotated_video_for_clip_legacy(
             sm_idx
         ) if len(hour_smoothed_diffs) > 0 else 0
 
-        time_text = timestamps[frame_idx].strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+        if vr.get("timestamp_source") == "relative":
+            time_text = format_relative_timestamp(timestamps[frame_idx])
+        else:
+            time_text = timestamps[frame_idx].strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
 
         cv2.putText(
             frame,
@@ -1500,6 +1163,11 @@ def process_hour_bucket(hour_key, clip_infos):
     if PRINT_THRESHOLD_SIGNAL_STATS:
         print_signal_stats("THRESHOLD-ONLY signal", threshold_signal)
 
+    is_relative_run = (
+        len(hour_agg["clip_results"]) == 1
+        and hour_agg["clip_results"][0].get("timestamp_source") == "relative"
+    )
+
     for start_g, end_g in hour_rotation_periods:
         duration = (end_g - start_g + 1) / max(1e-6, fps_for_filters)
 
@@ -1509,18 +1177,30 @@ def process_hour_bucket(hour_key, clip_infos):
         start_vr = next((vr for vr in hour_agg["clip_results"] if vr["clip_idx"] == start_video_idx), None)
         end_vr = next((vr for vr in hour_agg["clip_results"] if vr["clip_idx"] == end_video_idx), None)
 
+        bout_start_ts = hour_agg["combined_timestamps"][start_g]
+        bout_end_ts = hour_agg["combined_timestamps"][end_g]
+
+        if is_relative_run:
+            hour_bucket_label = "relative"
+            bout_start_text = format_relative_timestamp(bout_start_ts)
+            bout_end_text = format_relative_timestamp(bout_end_ts)
+        else:
+            hour_bucket_label = hour_key.strftime("%Y-%m-%d %H:00")
+            bout_start_text = bout_start_ts.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+            bout_end_text = bout_end_ts.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
+
         rotation_data.append({
-            "Hour Bucket": hour_key.strftime("%Y-%m-%d %H:00"),
+            "Hour Bucket": hour_bucket_label,
             "Start File": start_vr["video_file"] if start_vr else "",
             "End File": end_vr["video_file"] if end_vr else "",
             "Timestamp Source": start_vr["timestamp_source"] if start_vr else "",
-            "Bout Start": hour_agg["combined_timestamps"][start_g].strftime("%d.%m.%Y %H:%M:%S.%f")[:-3],
-            "Bout End": hour_agg["combined_timestamps"][end_g].strftime("%d.%m.%Y %H:%M:%S.%f")[:-3],
+            "Bout Start": bout_start_text,
+            "Bout End": bout_end_text,
             "Duration (seconds, frame-based)": duration,
         })
 
     hour_summary.append({
-        "Hour Bucket": hour_key.strftime("%Y-%m-%d %H:00"),
+        "Hour Bucket": "relative" if is_relative_run else hour_key.strftime("%Y-%m-%d %H:00"),
         "Num Files": len(hour_agg["clip_results"]),
         "Num Events": len(hour_rotation_periods),
         "First File": hour_agg["clip_results"][0]["video_file"],
@@ -1538,7 +1218,20 @@ def process_hour_bucket(hour_key, clip_infos):
     })
 
     if WRITE_HOUR_PLOTS:
-        plot_path = os.path.join(plot_folder, f"{hour_key.strftime('%Y%m%d_%H00')}_movement.png")
+        if is_relative_run:
+            source_stem = os.path.splitext(hour_agg["clip_results"][0]["video_file"])[0]
+            source_label = source_stem
+            plot_path = os.path.join(
+                plot_folder,
+                f"{sanitize_filename(source_stem)}_movement.png"
+            )
+        else:
+            source_label = None
+            plot_path = os.path.join(
+                plot_folder,
+                f"{hour_key.strftime('%Y%m%d_%H00')}_movement.png"
+            )
+
         save_hour_plot_legacy(
             hour_key,
             hour_agg["combined_timestamps"],
@@ -1546,7 +1239,9 @@ def process_hour_bucket(hour_key, clip_infos):
             threshold_curve,
             hour_rotation_periods,
             plot_path,
-            threshold_signal=threshold_signal
+            threshold_signal=threshold_signal,
+            source_label=source_label,
+            relative_time=is_relative_run
         )
 
     hour_rotation_mask = build_rotation_mask(len(smoothed_diffs), hour_rotation_periods)
@@ -1572,147 +1267,123 @@ def process_hour_bucket(hour_key, clip_infos):
             )
 
 # ============================================================
-# COMMAND-LINE CONFIGURATION
+# REPORT WRITING
 # ============================================================
 
-def build_arg_parser():
-    parser = argparse.ArgumentParser(
-        description=(
-            "Detect mechanical cattle-brush rotation from fixed-camera video "
-            "using the activity-index pipeline used in the associated study."
-        )
-    )
-    parser.add_argument(
-        "--input",
-        required=True,
-        help="Directory containing input video files."
-    )
-    parser.add_argument(
-        "--output",
-        required=True,
-        help="Base directory for analysis outputs."
-    )
-    parser.add_argument(
-        "--roi-preset",
-        default=DEFAULT_ROI_PRESET,
-        choices=sorted(ROI_ALL.keys()),
-        help=f"ROI preset to use (default: {DEFAULT_ROI_PRESET})."
-    )
-    parser.add_argument(
-        "--experiment-name",
-        default=EXPERIMENT_NAME,
-        help="Name of the output subdirectory."
-    )
-    parser.add_argument(
-        "--require-dvr-timestamps",
-        action="store_true",
-        help="Skip files that do not contain usable DVR timestamps."
-    )
-    parser.add_argument(
-        "--no-annotated-video",
-        action="store_true",
-        help="Do not write annotated video outputs."
-    )
-    parser.add_argument(
-        "--no-hour-plots",
-        action="store_true",
-        help="Do not write hourly signal plots."
-    )
-    parser.add_argument(
-        "--show-roi-preview",
-        action="store_true",
-        help="Display ROI preview windows during processing."
-    )
-    parser.add_argument(
-        "--no-roi-preview",
-        action="store_true",
-        help="Do not save ROI preview images."
-    )
-    return parser
+def write_reports(report_output_folder):
+    os.makedirs(report_output_folder, exist_ok=True)
 
+    df = pd.DataFrame(rotation_data)
+    excel_path = os.path.join(report_output_folder, "rotation_summary.xlsx")
+    df.to_excel(excel_path, index=False)
+    print("Summary saved:", excel_path)
 
-def configure_run(args):
-    """Configure paths and non-algorithmic run options from CLI arguments."""
-    global ROI
-    global EXPERIMENT_NAME
-    global REQUIRE_DVR_TIMESTAMPS
-    global WRITE_ANNOTATED_VIDEO
-    global WRITE_HOUR_PLOTS
-    global SHOW_ROI_PREVIEW
-    global SAVE_ROI_PREVIEW
-    global input_folder
-    global base_output_folder
-    global output_folder
-    global annotated_video_folder
-    global plot_folder
-    global preview_folder
+    hour_df = pd.DataFrame(hour_summary)
+    hour_excel_path = os.path.join(report_output_folder, "hour_bucket_summary.xlsx")
+    hour_df.to_excel(hour_excel_path, index=False)
+    print("Hour summary saved:", hour_excel_path)
 
-    input_folder = os.path.abspath(args.input)
-    base_output_folder = os.path.abspath(args.output)
+    ts_df = pd.DataFrame(file_timestamp_report)
+    ts_excel_path = os.path.join(report_output_folder, "file_timestamp_report.xlsx")
+    ts_df.to_excel(ts_excel_path, index=False)
+    print("File timestamp report saved:", ts_excel_path)
 
-    if not os.path.isdir(input_folder):
-        raise FileNotFoundError(f"Input directory does not exist: {input_folder}")
+    if len(gap_report) > 0:
+        gap_df = pd.DataFrame(gap_report)
+        gap_csv = os.path.join(report_output_folder, "timestamp_gap_report.csv")
+        gap_df.to_csv(gap_csv, index=False)
+        print("Gap report saved:", gap_csv)
+    else:
+        print("No timestamp gaps detected.")
 
-    ROI = ROI_ALL[args.roi_preset].copy()
-    EXPERIMENT_NAME = args.experiment_name
-    REQUIRE_DVR_TIMESTAMPS = bool(args.require_dvr_timestamps)
-    WRITE_ANNOTATED_VIDEO = not bool(args.no_annotated_video)
-    WRITE_HOUR_PLOTS = not bool(args.no_hour_plots)
-    SHOW_ROI_PREVIEW = bool(args.show_roi_preview)
-    SAVE_ROI_PREVIEW = not bool(args.no_roi_preview)
+def process_standalone_relative_video(clip_info):
+    """Process one untimestamped video independently with its own reports."""
+    global output_folder, annotated_video_folder, plot_folder, preview_folder
+    global rotation_data, gap_report, hour_summary, file_timestamp_report
 
-    output_folder = os.path.join(base_output_folder, EXPERIMENT_NAME)
-    annotated_video_folder = os.path.join(output_folder, "annotated_videos")
-    plot_folder = os.path.join(output_folder, "plots")
-    preview_folder = os.path.join(output_folder, "previews")
+    original_paths = (
+        output_folder,
+        annotated_video_folder,
+        plot_folder,
+        preview_folder,
+    )
+    original_data = (
+        rotation_data,
+        gap_report,
+        hour_summary,
+        file_timestamp_report,
+    )
 
-    os.makedirs(output_folder, exist_ok=True)
-    os.makedirs(annotated_video_folder, exist_ok=True)
-    os.makedirs(plot_folder, exist_ok=True)
-    os.makedirs(preview_folder, exist_ok=True)
+    source_stem = sanitize_filename(os.path.splitext(clip_info["video_file"])[0])
+    standalone_root = os.path.join(
+        original_paths[0],
+        "standalone_relative",
+        source_stem
+    )
 
-    print(f"Input directory: {input_folder}")
-    print(f"Output directory: {output_folder}")
-    print(f"ROI preset: {args.roi_preset}")
-    print(f"FFmpeg/ffprobe available: {FFMPEG_AVAILABLE}")
+    try:
+        output_folder = standalone_root
+        annotated_video_folder = os.path.join(output_folder, "annotated_videos")
+        plot_folder = os.path.join(output_folder, "plots")
+        preview_folder = os.path.join(output_folder, "previews")
 
+        os.makedirs(output_folder, exist_ok=True)
+        os.makedirs(annotated_video_folder, exist_ok=True)
+        os.makedirs(plot_folder, exist_ok=True)
+        os.makedirs(preview_folder, exist_ok=True)
+
+        rotation_data = []
+        gap_report = []
+        hour_summary = []
+        file_timestamp_report = [{
+            "Video File": clip_info["video_file"],
+            "Start Timestamp": "00:00:00.000",
+            "Timestamp Source": "relative",
+            "FPS": clip_info["fps"],
+            "Frame Count": clip_info["length"],
+        }]
+
+        print("\n" + "=" * 80)
+        print(f"STANDALONE RELATIVE-TIME VIDEO: {clip_info['video_file']}")
+        print("Relative time starts at 00:00:00 (internal anchor: 1970-01-01 00:00:00 UTC)")
+        print("=" * 80)
+
+        process_hour_bucket(RELATIVE_TIME_ANCHOR, [clip_info])
+        write_reports(output_folder)
+
+    finally:
+        (
+            output_folder,
+            annotated_video_folder,
+            plot_folder,
+            preview_folder,
+        ) = original_paths
+        (
+            rotation_data,
+            gap_report,
+            hour_summary,
+            file_timestamp_report,
+        ) = original_data
 
 # ============================================================
 # MAIN
 # ============================================================
 
 if __name__ == "__main__":
-    parser = build_arg_parser()
-    args = parser.parse_args()
-    configure_run(args)
+    buckets, relative_videos = build_hour_buckets(input_folder)
 
-    buckets = build_hour_buckets(input_folder)
-
-    if len(buckets) == 0:
+    if len(buckets) == 0 and len(relative_videos) == 0:
         print("No valid video files found.")
-    else:
+
+    # Original absolute-time workflow remains unchanged.
+    if len(buckets) > 0:
         for hour_key, clip_infos in sorted(buckets.items()):
             process_hour_bucket(hour_key, clip_infos)
 
-    df = pd.DataFrame(rotation_data)
-    excel_path = os.path.join(output_folder, "rotation_summary.xlsx")
-    df.to_excel(excel_path, index=False)
-    print("Summary saved:", excel_path)
+        write_reports(output_folder)
 
-    hour_df = pd.DataFrame(hour_summary)
-    hour_excel_path = os.path.join(output_folder, "hour_bucket_summary.xlsx")
-    hour_df.to_excel(hour_excel_path, index=False)
-    print("Hour summary saved:", hour_excel_path)
+    # Untimestamped videos are never combined. Each receives its own output folder
+    # and its own rotation/timestamp/hour reports using relative time from 00:00:00.
+    for clip_info in relative_videos:
+        process_standalone_relative_video(clip_info)
 
-    ts_df = pd.DataFrame(file_timestamp_report)
-    ts_excel_path = os.path.join(output_folder, "file_timestamp_report.xlsx")
-    ts_df.to_excel(ts_excel_path, index=False)
-    print("File timestamp report saved:", ts_excel_path)
-
-    if len(gap_report) > 0:
-        gap_df = pd.DataFrame(gap_report)
-        gap_csv = os.path.join(output_folder, "timestamp_gap_report.csv")
-        gap_df.to_csv(gap_csv, index=False)
-        print("Gap report saved:", gap_csv)
-    else:
-        print("No timestamp gaps detected.")

@@ -51,8 +51,7 @@ crossing is evaluated on the original smoothed normalized signal.
 
 The final detector includes the 2-s merge rule, normalized-amplitude/context
 filters, a short-bout window rule, a 4-min surrounding-window rule, and a
-maximum-duration rule. The manuscript or supplementary methods should describe
-all operations that affect the reported intervals.
+maximum-duration rule.
 
 ### Timing
 

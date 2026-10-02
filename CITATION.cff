@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite the associated manuscript and this software release."
-title: "Cattle Brush Activity Index for Mechanical Rotation Detection"
+title: "Monitoring cattle brush use using video activity index"
 type: software
 authors:
   - family-names: "Muraina"

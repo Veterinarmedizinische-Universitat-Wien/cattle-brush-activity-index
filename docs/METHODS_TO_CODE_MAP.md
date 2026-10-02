@@ -58,4 +58,4 @@ all operations that affect the reported intervals.
 
 Absolute-time recordings retain the original hour-bucket workflow. A video
 without DVR or recognised filename timing can be analysed independently in
-relative time; such videos are not combined into the absolute sequence.
+relative time.

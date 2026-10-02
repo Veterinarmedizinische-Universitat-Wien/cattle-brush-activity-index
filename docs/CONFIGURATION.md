@@ -35,9 +35,3 @@ own output reports.
 Set `REQUIRE_DVR_TIMESTAMPS = True` when only supported DVR metadata should be
 accepted. Set `ALLOW_STANDALONE_RELATIVE_TIME = False` to disable the relative
 fallback.
-
-## Large example files
-
-Video extensions are ignored by Git. Place a local test recording under
-`examples/input/` if desired. Generated annotated videos should remain local or
-be supplied separately as manuscript supplementary material.

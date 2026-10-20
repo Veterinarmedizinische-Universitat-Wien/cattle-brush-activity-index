@@ -1,28 +1,14 @@
-# ============================================================
-# FULLY PATCHED CROSS-FARM CODE
-# CONTINUOUS HOUR SIGNAL + LEGACY-STYLE DETECTION/POSTPROCESSING
+# ============================================================ 
+# CONTINUOUS HOUR SIGNAL + DETECTION/POSTPROCESSING
 # USING ROBUST NORMALIZED SIGNAL FOR CROSS-FARM TRANSFER
 # + DVR TIMESTAMPS FOR PLOTTING / EXPORT / ANNOTATION
-#
-# ROBUST THRESHOLD PATCH
-# ----------------------
-# This version keeps your motion-difference logic intact, but makes
-# threshold determination robust against short extreme spikes.
-#
-# MAIN FIXES
 # ----------
-# 1) Compute the original raw motion signal exactly as before.
-# 2) Normalize and smooth exactly as before.
+# 1) Compute the original raw motion signal.
+# 2) Normalize and smooth.
 # 3) Build a THRESHOLD-ONLY signal where isolated short spikes are suppressed.
 # 4) Compute segment thresholds from that threshold-only signal.
 # 5) Use a HIGH PERCENTILE segment reference instead of raw segment max.
 # 6) Run final detection on the ORIGINAL smoothed signal.
-#
-# RESULT
-# ------
-# Short lone spikes (< ~10 sec) no longer inflate thresholds for an
-# entire segment, while the original signal remains fully available
-# for bout detection.
 # ============================================================
 
 import os
@@ -467,7 +453,7 @@ def suppress_isolated_short_spikes(
     return x
 
 # ============================================================
-# LEGACY-STYLE DETECTOR HELPERS (NORMALIZED SIGNAL)
+# DETECTOR HELPERS (NORMALIZED SIGNAL)
 # ============================================================
 
 def compute_segment_threshold_curve(
@@ -799,7 +785,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
     }
 
 # ============================================================
-# RUN FULL LEGACY-STYLE DETECTOR ON NORMALIZED HOUR SIGNAL
+# RUN FULL DETECTOR ON NORMALIZED HOUR SIGNAL
 # ============================================================
 
 def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters):
@@ -848,7 +834,7 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters)
         min_duration_seconds=MIN_BOUT_SECONDS
     )
 
-    # 6) legacy-style postprocessing unchanged
+    # 6) postprocessing 
     if MERGE_CLOSE_BOUTS:
         rotation_periods = merge_close_periods(
             rotation_periods,

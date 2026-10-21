@@ -13,7 +13,7 @@ import numpy as np
 # EXPERIMENT LABEL
 # ============================================================
 
-EXPERIMENT_NAME = "legacy_continuous_hour_signal_cross_farm_normalized_v3_spike_robust_threshold"
+EXPERIMENT_NAME = "brush_index_v6"
 
 # ============================================================
 # ROI PRESETS
@@ -40,6 +40,8 @@ ROI = ROI_ALL["44"]
 # ============================================================
 
 FRAME_SKIP_ANNOTATION = 3
+PROCESSING_HEIGHT = 360  # Resize BEFORE motion extraction; None disables
+ROI_REFERENCE_SIZES = {"A": (1280,720), "B": (1280,720), "C": (1280,720), "D": (1280,720), "E": (1280,720), "44": (1920,1080), "60": (1920,1080), "rpi cam": (1280,720)}
 DOWNSCALE = 0.5
 OUTPUT_CODEC = "mp4v"
 OUTPUT_EXT = ".mp4"

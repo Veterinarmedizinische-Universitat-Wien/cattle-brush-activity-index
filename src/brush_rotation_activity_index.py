@@ -28,6 +28,8 @@ from config import (
     CLAHE_ONLY_IF_DARK,
     CLAHE_TILE_GRID,
     DOWNSCALE,
+    PROCESSING_HEIGHT,
+    ROI_REFERENCE_SIZES,
     FRAME_SKIP_ANNOTATION,
     LEGACY_CONTEXT_MAX_PIXEL,
     LEGACY_CONTEXT_WINDOW_MINUTES,
@@ -50,6 +52,7 @@ from config import (
     ROBUST_NORM_HIGH_PCT,
     ROBUST_NORM_LOW_PCT,
     ROI,
+    ROI_ALL,
     SAVE_ROI_PREVIEW,
     SHORT_BOUT_SECONDS,
     SHORT_BOUT_WINDOW_SECONDS,
@@ -655,6 +658,20 @@ def filter_low_movement_within_window(
 # CONTINUOUS HOUR SIGNAL EXTRACTION
 # ============================================================
 
+def prepare_analysis_frame(frame, roi_polygon, roi_reference_size):
+    """Resize first, then map the configured polygon into processed coordinates."""
+    h, w = frame.shape[:2]
+    if not PROCESSING_HEIGHT:
+        return frame, roi_polygon
+    new_h = int(PROCESSING_HEIGHT)
+    new_w = max(2, int(round(w * new_h / h)))
+    new_w += new_w % 2
+    small = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    ref_w, ref_h = roi_reference_size
+    scaled = np.rint(roi_polygon.astype(np.float64) * [new_w / ref_w, new_h / ref_h]).astype(np.int32)
+    return small, scaled
+
+
 def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
     """
     Builds one continuous RAW motion signal for the whole hour, preserving
@@ -711,10 +728,13 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
                 break
 
             try:
-                enhanced_frame = enhance_low_light(frame)
-                preprocessed_frame = preprocess_frame_for_white_legacy(enhanced_frame, roi_polygon)
+                analysis_frame, analysis_polygon = prepare_analysis_frame(
+                    frame, roi_polygon, ROI_REFERENCE_SIZES.get(next((k for k, v in ROI_ALL.items() if np.array_equal(v, roi_polygon)), "B"), (frame.shape[1], frame.shape[0]))
+                )
+                enhanced_frame = enhance_low_light(analysis_frame)
+                preprocessed_frame = preprocess_frame_for_white_legacy(enhanced_frame, analysis_polygon)
                 gray_frame = cv2.cvtColor(preprocessed_frame, cv2.COLOR_BGR2GRAY)
-                roi = get_roi_from_polygon_legacy(gray_frame, roi_polygon)
+                roi = get_roi_from_polygon_legacy(gray_frame, analysis_polygon)
                 roi = blend_with_previous(roi, prev_roi, alpha=BLEND_ALPHA)
 
                 if prev_roi is not None:
@@ -749,6 +769,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
             "video_path": video_path,
             "video_file": video_file,
             "fps": fps,
+            "actual_fps": clip_info.get("actual_fps", fps),
             "frame_width": frame_width,
             "frame_height": frame_height,
             "timestamps": actual_timestamps,
@@ -1027,7 +1048,7 @@ def write_annotated_video_for_clip_legacy(
 
     new_w = max(2, int(frame_width * DOWNSCALE))
     new_h = max(2, int(frame_height * DOWNSCALE))
-    out_fps = max(1.0, fps / max(1, FRAME_SKIP_ANNOTATION))
+    out_fps = max(1.0, vr.get("actual_fps", fps) / max(1, FRAME_SKIP_ANNOTATION))
     roi_polygon_scaled = (roi_polygon.astype(np.float32) * DOWNSCALE).astype(np.int32)
 
     writer = cv2.VideoWriter(
@@ -1132,7 +1153,7 @@ def process_hour_bucket(hour_key, clip_infos):
         print("No valid videos in this hour bucket.")
         return
 
-    fps_values = [vr["fps"] for vr in hour_agg["clip_results"] if vr["fps"] > 0]
+    fps_values = [vr["actual_fps"] for vr in hour_agg["clip_results"] if vr["actual_fps"] > 0]
     fps_for_filters = float(np.median(fps_values)) if len(fps_values) > 0 else 30.0
 
     if PRINT_HOUR_SIGNAL_STATS:

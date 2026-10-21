@@ -401,7 +401,20 @@ def get_clip_start_info(video_path, allow_relative_time=False):
         print(f"Skipping non-DVR timestamp file: {os.path.basename(video_path)}")
         return None
 
+    # Estimate sampling rate from independent DVR timestamps, not container FPS.
+    # Filename-based timing remains an assumption and is labeled accordingly.
+    timestamps = ts_info["timestamps"]
+    if ts_info["timestamp_source"] == "dvr" and len(timestamps) >= 2:
+        deltas = [(b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:])]
+        valid = sorted(dt for dt in deltas if dt > 0)
+        mid = len(valid) // 2
+        median_dt = (valid[mid] if len(valid) % 2 else (valid[mid - 1] + valid[mid]) / 2) if valid else 0
+        actual_fps = 1 / median_dt if median_dt > 0 else basic["fps"]
+    else:
+        actual_fps = basic["fps"]
+
     return {
+        "actual_fps": actual_fps,
         "video_path": video_path,
         "video_file": os.path.basename(video_path),
         "fps": basic["fps"],

@@ -86,6 +86,77 @@ class RoiTests(unittest.TestCase):
         self.assertEqual(ctx.roi_reference_size, (1920, 1080))
 
 
+class GeometryTests(unittest.TestCase):
+    def test_native_resolution_no_resize(self):
+        geo = bri.build_analysis_geometry(1920, 1080, config.ROI_ALL["44"], (1920, 1080), None)
+        self.assertIsNone(geo.target_size)
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        self.assertIs(geo.prepare(frame), frame)  # no copy
+        np.testing.assert_array_equal(geo.polygon, config.ROI_ALL["44"])
+
+    def test_never_upscales_or_copies_at_native_height(self):
+        for target in (720, 1080):
+            geo = bri.build_analysis_geometry(1280, 720, config.ROI_ALL["B"], (1280, 720), target)
+            self.assertIsNone(geo.target_size, target)
+
+    def test_downscale_target_and_masks(self):
+        geo = bri.build_analysis_geometry(1920, 1080, config.ROI_ALL["44"], (1920, 1080), 360)
+        self.assertEqual(geo.target_size, (640, 360))
+        self.assertEqual(geo.mask_color.shape, (360, 640, 3))
+        self.assertEqual(geo.mask_gray.shape, (360, 640))
+        np.testing.assert_array_equal(geo.mask_gray, geo.mask_color[:, :, 0])
+
+    def test_cached_masks_match_per_frame_masks(self):
+        rng = np.random.default_rng(2)
+        frame = rng.integers(0, 255, (360, 640, 3), dtype=np.uint8)
+        geo = bri.build_analysis_geometry(640, 360, config.ROI_ALL["B"], (1280, 720), None)
+        np.testing.assert_array_equal(
+            bri.preprocess_frame_for_white_legacy(frame, geo.polygon, geo.mask_color),
+            bri.preprocess_frame_for_white_legacy(frame, geo.polygon),
+        )
+
+
+class MidFileResolutionChangeTests(unittest.TestCase):
+    def test_geometry_rebuilt_when_frame_size_changes(self):
+        rng = np.random.default_rng(4)
+        frames = [rng.integers(0, 255, (720, 1280, 3), dtype=np.uint8) for _ in range(5)]
+        frames += [rng.integers(0, 255, (1080, 1920, 3), dtype=np.uint8) for _ in range(5)]
+
+        class FakeCapture:
+            def __init__(self, *_):
+                self.i = 0
+            def isOpened(self):
+                return True
+            def read(self):
+                if self.i >= len(frames):
+                    return False, None
+                self.i += 1
+                return True, frames[self.i - 1]
+            def release(self):
+                pass
+
+        t0 = datetime(2024, 4, 25, 12, 0, 0)
+        clip = {
+            "video_path": "fake.mp4", "video_file": "fake.mp4", "fps": 10.0,
+            "actual_fps": 10.0, "frame_width": 1280, "frame_height": 720,
+            "timestamps": [t0 + timedelta(seconds=i / 10) for i in range(10)],
+            "timestamp_source": "filename", "camera_id": None, "stream_id": None,
+            "overlay_id": None, "length": 10,
+        }
+        ctx = bri.RunContext(output_folder="unused", roi_polygon=config.ROI_ALL["B"],
+                             roi_reference_size=(1280, 720),
+                             save_roi_preview=False, show_roi_preview=False)
+        with patch.object(bri.cv2, "VideoCapture", FakeCapture), \
+                patch("builtins.print") as printed:
+            agg = bri.build_continuous_hour_signal(t0, [clip], ctx)
+
+        self.assertEqual(len(agg["combined_diffs_raw"]), 10)
+        warnings = [c.args[0] for c in printed.call_args_list if "rebuilding ROI geometry" in str(c.args)]
+        self.assertEqual(len(warnings), 1)
+        # first frame and the frame after the size change have no comparable previous ROI
+        self.assertEqual(int((~agg["combined_valid"]).sum()), 2)
+
+
 class NormalisationTests(unittest.TestCase):
     def test_placeholder_frames_excluded_from_references(self):
         rng = np.random.default_rng(1)

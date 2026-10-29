@@ -409,13 +409,24 @@ def enhance_low_light(frame):
     enhanced_lab = cv2.merge((l, a, b))
     return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
 
-def get_roi_from_polygon_legacy(frame, polygon):
-    mask = np.zeros_like(frame, dtype=np.uint8)
+def build_legacy_roi_mask(shape, polygon):
+    """ROI mask exactly as the original per-frame code built it.
+
+    Note: on a 3-channel shape, cv2.fillPoly with the scalar 255 fills only the
+    first (blue) channel, so the colour ROI keeps blue and zeroes green/red.
+    This is the behaviour the study results were produced with and is kept.
+    """
+    mask = np.zeros(shape, dtype=np.uint8)
     cv2.fillPoly(mask, [polygon], 255)
+    return mask
+
+def get_roi_from_polygon_legacy(frame, polygon, mask=None):
+    if mask is None:
+        mask = build_legacy_roi_mask(frame.shape, polygon)
     return cv2.bitwise_and(frame, mask)
 
-def preprocess_frame_for_white_legacy(frame, polygon):
-    roi = get_roi_from_polygon_legacy(frame, polygon)
+def preprocess_frame_for_white_legacy(frame, polygon, mask=None):
+    roi = get_roi_from_polygon_legacy(frame, polygon, mask)
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     normalized_l = cv2.normalize(l, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
@@ -720,6 +731,51 @@ def scale_polygon(roi_polygon, from_size, to_size):
     ).astype(np.int32)
 
 
+def analysis_size_for(frame_w, frame_h, processing_height=None):
+    """(width, height) to resize to, or None when frames are used as decoded.
+
+    Frames are never upscaled: a target at or above the native height means no
+    resize (no copy, no interpolation).
+    """
+    if not processing_height or int(processing_height) >= frame_h:
+        return None
+    new_h = int(processing_height)
+    new_w = max(2, int(round(frame_w * new_h / frame_h)))
+    new_w += new_w % 2
+    return new_w, new_h
+
+
+@dataclass
+class AnalysisGeometry:
+    """Per-video analysis setup, computed once and reused for every frame."""
+    frame_shape: tuple          # (height, width) of decoded frames
+    target_size: tuple          # (width, height) to resize to, or None
+    polygon: np.ndarray         # ROI polygon in analysis-frame coordinates
+    mask_color: np.ndarray      # legacy ROI mask for the BGR analysis frame
+    mask_gray: np.ndarray       # ROI mask for the grayscale analysis frame
+
+    def prepare(self, frame):
+        if self.target_size is None:
+            return frame
+        return cv2.resize(frame, self.target_size, interpolation=cv2.INTER_AREA)
+
+
+def build_analysis_geometry(frame_w, frame_h, roi_polygon, roi_reference_size=None,
+                            processing_height=None):
+    if roi_reference_size is None:
+        roi_reference_size = (frame_w, frame_h)
+    target = analysis_size_for(frame_w, frame_h, processing_height)
+    analysis_w, analysis_h = target if target is not None else (frame_w, frame_h)
+    polygon = scale_polygon(roi_polygon, roi_reference_size, (analysis_w, analysis_h))
+    return AnalysisGeometry(
+        frame_shape=(frame_h, frame_w),
+        target_size=target,
+        polygon=polygon,
+        mask_color=build_legacy_roi_mask((analysis_h, analysis_w, 3), polygon),
+        mask_gray=build_legacy_roi_mask((analysis_h, analysis_w), polygon),
+    )
+
+
 def prepare_analysis_frame(frame, roi_polygon, roi_reference_size=None):
     """Resize first, then map the configured polygon into processed coordinates.
 
@@ -727,19 +783,8 @@ def prepare_analysis_frame(frame, roi_polygon, roi_reference_size=None):
     None means the polygon is in this frame's native coordinates.
     """
     h, w = frame.shape[:2]
-    if roi_reference_size is None:
-        roi_reference_size = (w, h)
-
-    if PROCESSING_HEIGHT:
-        new_h = int(PROCESSING_HEIGHT)
-        new_w = max(2, int(round(w * new_h / h)))
-        new_w += new_w % 2
-        analysis = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    else:
-        new_w, new_h = w, h
-        analysis = frame
-
-    return analysis, scale_polygon(roi_polygon, roi_reference_size, (new_w, new_h))
+    geometry = build_analysis_geometry(w, h, roi_polygon, roi_reference_size, PROCESSING_HEIGHT)
+    return geometry.prepare(frame), geometry.polygon
 
 
 def clips_are_contiguous(prev_last_ts, next_first_ts, max_gap_seconds=CLIP_JOIN_MAX_GAP_SECONDS):
@@ -832,19 +877,40 @@ def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
         pbar = tqdm(total=total_frames_target, desc=f"Continuous signal [{video_file}]")
         local_frame_idx = 0
 
+        # Resize target, scaled ROI polygon and ROI masks: once per video.
+        geometry = build_analysis_geometry(
+            frame_width, frame_height, roi_polygon, roi_reference_size, PROCESSING_HEIGHT
+        )
+
         while local_frame_idx < total_frames_target:
             ret, frame = cap.read()
             if not ret:
                 break
 
             try:
-                analysis_frame, analysis_polygon = prepare_analysis_frame(
-                    frame, roi_polygon, roi_reference_size
-                )
+                if frame.shape[:2] != geometry.frame_shape:
+                    # Resolution changed mid-file (some DVR/stream recordings):
+                    # rebuild the geometry for the new size instead of mis-scaling.
+                    new_h, new_w = frame.shape[:2]
+                    print(
+                        f"WARNING: {video_file} frame {local_frame_idx} is {new_w}x{new_h}, "
+                        f"expected {geometry.frame_shape[1]}x{geometry.frame_shape[0]}; "
+                        "rebuilding ROI geometry."
+                    )
+                    geometry = build_analysis_geometry(
+                        new_w, new_h, roi_polygon, roi_reference_size, PROCESSING_HEIGHT
+                    )
+                    # The previous ROI has the old size and cannot be blended or
+                    # differenced with the new frames; start a new run.
+                    prev_roi = None
+
+                analysis_frame = geometry.prepare(frame)
                 enhanced_frame = enhance_low_light(analysis_frame)
-                preprocessed_frame = preprocess_frame_for_white_legacy(enhanced_frame, analysis_polygon)
+                preprocessed_frame = preprocess_frame_for_white_legacy(
+                    enhanced_frame, geometry.polygon, geometry.mask_color
+                )
                 gray_frame = cv2.cvtColor(preprocessed_frame, cv2.COLOR_BGR2GRAY)
-                roi = get_roi_from_polygon_legacy(gray_frame, analysis_polygon)
+                roi = get_roi_from_polygon_legacy(gray_frame, geometry.polygon, geometry.mask_gray)
                 roi = blend_with_previous(roi, prev_roi, alpha=BLEND_ALPHA)
 
                 if prev_roi is not None and prev_roi.shape == roi.shape:

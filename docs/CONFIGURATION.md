@@ -41,7 +41,13 @@ native resolution, as for the main evaluation results. Setting
 `PROCESSING_HEIGHT` to 720, 480 or 360 resizes each decoded frame inside the
 pipeline before motion extraction (in-pipeline downscaling, as in the resolution
 benchmark); this increases throughput, but check detection performance on
-representative day and night footage first.
+representative day and night footage first. Frames are never upscaled: a value
+at or above the video's height means no resizing.
+
+The resize target, scaled ROI polygon and ROI masks are computed once per video
+and reused for every frame. If a video's frame size changes mid-file, the run
+prints a warning, rebuilds them for the new size and starts a new
+frame-difference run from that frame.
 
 The ROI polygon is scaled from its reference size to the analysed frame, to the
 native frame for the ROI preview, and to `DOWNSCALE` (default 0.5) for annotated

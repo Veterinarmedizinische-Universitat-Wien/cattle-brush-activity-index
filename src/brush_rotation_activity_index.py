@@ -59,8 +59,6 @@ from config import (
     ROI_ALL,
     ROI_REFERENCE_SIZE,
     SAVE_ROI_PREVIEW,
-    SHORT_BOUT_SECONDS,
-    SHORT_BOUT_WINDOW_SECONDS,
     SHOW_ROI_PREVIEW,
     SMOOTH_WINDOW,
     THRESHOLD_REF_PERCENTILE,
@@ -74,7 +72,6 @@ from config import (
     WRITE_HOUR_PLOTS,
     base_output_folder,
     input_folder,
-    validate_config,
 )
 from io_utils import (
     format_relative_timestamp,
@@ -671,42 +668,6 @@ def filter_contextual_false_positives_with_edges(
 
     return filtered_periods
 
-def is_within_threshold(bout_durations, threshold=4):
-    return all(duration < threshold for duration in bout_durations)
-
-def evaluate_window(rotation_periods, fps, window_seconds=40, threshold=4):
-    filtered_bouts = []
-    window_frames = int(window_seconds * max(1e-6, fps))
-
-    for i, (start, end) in enumerate(rotation_periods):
-        window_bouts = []
-        for j in range(i, len(rotation_periods)):
-            other_start, other_end = rotation_periods[j]
-            if other_start <= start + window_frames:
-                window_bouts.append((other_start, other_end))
-            else:
-                break
-
-        bout_durations = [(e - s + 1) / max(1e-6, fps) for s, e in window_bouts]
-
-        if is_within_threshold(bout_durations, threshold=threshold):
-            surrounding_bouts = []
-
-            if i > 0:
-                ps, pe = rotation_periods[i - 1]
-                if (pe - ps + 1) / max(1e-6, fps) <= 5:
-                    surrounding_bouts.append((ps, pe))
-
-            if i + 1 < len(rotation_periods):
-                ns, ne = rotation_periods[i + 1]
-                if (ne - ns + 1) / max(1e-6, fps) <= 5:
-                    surrounding_bouts.append((ns, ne))
-
-            filtered_bouts.extend(window_bouts + surrounding_bouts)
-
-    filtered_set = set(filtered_bouts)
-    return [bout for bout in rotation_periods if bout not in filtered_set]
-
 def filter_low_movement_within_window(
     rotation_periods,
     smoothed_diffs,
@@ -1053,13 +1014,6 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters,
         smoothed_diffs,
         pixel_threshold_low=LEGACY_PIXEL_THRESHOLD_LOW,
         pixel_threshold_high=LEGACY_PIXEL_THRESHOLD_HIGH
-    )
-
-    rotation_periods = evaluate_window(
-        rotation_periods,
-        fps_for_filters,
-        window_seconds=SHORT_BOUT_WINDOW_SECONDS,
-        threshold=SHORT_BOUT_SECONDS
     )
 
     rotation_periods = filter_low_movement_within_window(
@@ -1511,9 +1465,6 @@ def process_standalone_relative_video(clip_info, ctx: RunContext):
 
 def run(input_dir, ctx: RunContext):
     """Run the full workflow on ``input_dir``. Returns the main RunContext."""
-    for warning in validate_config():
-        print("CONFIG WARNING:", warning)
-
     ctx.ensure_directories()
     buckets, relative_videos = build_hour_buckets(input_dir, ctx)
 

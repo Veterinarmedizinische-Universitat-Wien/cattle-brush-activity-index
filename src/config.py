@@ -42,7 +42,11 @@ ROI = ROI_ALL["44"]
 # ============================================================
 
 FRAME_SKIP_ANNOTATION = 3
-PROCESSING_HEIGHT = 360  # Resize BEFORE motion extraction; None disables
+# Analysis resolution. None (default) analyses frames at the recording's native
+# resolution, as for the main evaluation results. Set e.g. 720, 480 or 360 to
+# resize frames inside the pipeline before motion extraction (in-pipeline
+# downscaling, as in the resolution benchmark); validate detection first.
+PROCESSING_HEIGHT = None
 # Frame size (width, height) in which each ROI preset was drawn. ROI polygons are
 # scaled from this size to the processed frame size.
 ROI_REFERENCE_SIZES = {"A": (1280,720), "B": (1280,720), "C": (1280,720), "D": (1280,720), "E": (1280,720), "44": (1920,1080), "60": (1920,1080), "rpi cam": (1280,720)}
@@ -109,14 +113,6 @@ LEGACY_PIXEL_THRESHOLD_HIGH = 0.40
 LEGACY_CONTEXT_WINDOW_MINUTES = 4
 LEGACY_CONTEXT_MAX_PIXEL = 0.45
 
-# Clustered short-bout rule (evaluate_window). It removes bouts when every bout
-# starting within SHORT_BOUT_WINDOW_SECONDS is shorter than SHORT_BOUT_SECONDS.
-# Detection already requires bouts to be longer than MIN_BOUT_SECONDS, so this
-# rule can only remove anything when SHORT_BOUT_SECONDS > MIN_BOUT_SECONDS.
-# With the study defaults (4 and 4) it removes nothing; validate_config() warns.
-SHORT_BOUT_WINDOW_SECONDS = 40
-SHORT_BOUT_SECONDS = 4
-
 # Merge nearby bouts to reduce fragmentation
 MERGE_CLOSE_BOUTS = True
 MERGE_GAP_SECONDS = 2.0
@@ -146,13 +142,3 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 input_folder = os.environ.get("CBAI_INPUT", os.path.join(REPO_ROOT, "examples", "input"))
 base_output_folder = os.environ.get("CBAI_OUTPUT", os.path.join(REPO_ROOT, "examples", "output"))
 
-
-def validate_config():
-    """Return warnings for parameter combinations that silently disable a rule."""
-    warnings = []
-    if SHORT_BOUT_SECONDS <= MIN_BOUT_SECONDS:
-        warnings.append(
-            f"SHORT_BOUT_SECONDS ({SHORT_BOUT_SECONDS}) <= MIN_BOUT_SECONDS ({MIN_BOUT_SECONDS}): "
-            "the clustered short-bout rule (evaluate_window) cannot remove any bout."
-        )
-    return warnings

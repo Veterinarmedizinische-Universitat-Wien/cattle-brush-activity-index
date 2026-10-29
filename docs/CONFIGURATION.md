@@ -34,41 +34,16 @@ last frame; larger gaps reset it. Frames without a real motion score (the first
 frame after a reset and frames that failed to process) are excluded from the
 normalisation percentiles. `hour_bucket_summary.csv` reports both counts.
 
-## Clustered short-bout rule
-
-`evaluate_window` removes bouts when every bout starting within
-`SHORT_BOUT_WINDOW_SECONDS` is shorter than `SHORT_BOUT_SECONDS`. Because
-detection already requires bouts longer than `MIN_BOUT_SECONDS`, the rule only
-has an effect when `SHORT_BOUT_SECONDS > MIN_BOUT_SECONDS`. With the study
-defaults (4 s and 4 s) it removes nothing, and the run prints a config warning.
-
-## Timing priority
-
-The software attempts timing in this order:
-
-1. DVR metadata (`timestamp_source = dvr`)
-2. recognised filename start time (`timestamp_source = filename`)
-3. standalone relative time (`timestamp_source = relative`)
-
-Filename timing accepts the patterns documented in the main README. Filename and
-DVR absolute times are not automatically timezone-converted.
-
-When relative fallback is used, the internal anchor is
-`1970-01-01 00:00:00 UTC`, but reports and annotated video display elapsed time
-from `00:00:00`. Each relative video is analysed independently and receives its
-own output reports.
-
-Set `REQUIRE_DVR_TIMESTAMPS = True` (or pass `--require-dvr-timestamps`) when only supported DVR metadata should be
-accepted. Set `ALLOW_STANDALONE_RELATIVE_TIME = False` to disable the relative
-fallback.
-
 ## Processing resolution
 
-Every frame is resized to `PROCESSING_HEIGHT` (default 360 px; 640×360 for
-16:9 video) before motion extraction, so the ROI covers the same number of
-pixels whatever the recording resolution. The ROI polygon is scaled from its
-reference size to the processed frame, to the native frame for the ROI preview,
-and to `DOWNSCALE` (default 0.5) for annotated videos. If a video's aspect
-ratio differs from the ROI's reference size, the run prints a warning because
-the polygon would be stretched. Set `PROCESSING_HEIGHT = None` to analyse at
-native resolution.
+By default (`PROCESSING_HEIGHT = None`) frames are analysed at the recording's
+native resolution, as for the main evaluation results. Setting
+`PROCESSING_HEIGHT` to 720, 480 or 360 resizes each decoded frame inside the
+pipeline before motion extraction (in-pipeline downscaling, as in the resolution
+benchmark); this increases throughput, but check detection performance on
+representative day and night footage first.
+
+The ROI polygon is scaled from its reference size to the analysed frame, to the
+native frame for the ROI preview, and to `DOWNSCALE` (default 0.5) for annotated
+videos. If a video's aspect ratio differs from the ROI's reference size, the run
+prints a warning because the polygon would be stretched.

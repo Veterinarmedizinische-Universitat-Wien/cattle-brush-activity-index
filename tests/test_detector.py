@@ -29,12 +29,14 @@ class ImportSideEffectTests(unittest.TestCase):
 
 
 class RoiTests(unittest.TestCase):
+    @patch.object(bri, "PROCESSING_HEIGHT", 360)
     def test_no_reference_size_means_native_coordinates(self):
         frame = np.zeros((720, 1280, 3), np.uint8)
         polygon = np.array([[100, 100], [100, 300], [400, 300], [400, 100]], np.int32)
         _, scaled = bri.prepare_analysis_frame(frame, polygon, None)
         np.testing.assert_array_equal(scaled, np.rint(polygon * 0.5).astype(np.int32))
 
+    @patch.object(bri, "PROCESSING_HEIGHT", 360)
     def test_custom_polygon_scaled_from_native_1080p(self):
         """A custom polygon on 1080p footage must not be scaled as if drawn on 720p."""
         frame = np.zeros((1080, 1920, 3), np.uint8)
@@ -123,33 +125,6 @@ class ThresholdTests(unittest.TestCase):
         signal = np.ones(100, np.float32)
         out = bri.compute_segment_threshold_curve(signal, 10.0)
         self.assertIsInstance(out, np.ndarray)
-
-
-class ShortBoutRuleTests(unittest.TestCase):
-    fps = 10.0
-
-    def bouts(self, *specs):
-        """specs: (start_s, duration_s) -> frame periods."""
-        return [(int(s * self.fps), int((s + d) * self.fps) - 1) for s, d in specs]
-
-    def test_study_defaults_cannot_remove_detected_bouts(self):
-        # Every detected bout is > MIN_BOUT_SECONDS, so "all < SHORT_BOUT_SECONDS"
-        # is never true with the shipped defaults.
-        periods = self.bouts((0, 4.1), (10, 4.2), (20, 4.5))
-        out = bri.evaluate_window(periods, self.fps, window_seconds=40,
-                                  threshold=config.SHORT_BOUT_SECONDS)
-        self.assertEqual(out, periods)
-        self.assertTrue(any("evaluate_window" in w for w in config.validate_config()))
-
-    def test_rule_removes_short_cluster_when_threshold_exceeds_minimum(self):
-        short = self.bouts((0, 4.5), (10, 4.5), (20, 4.5))
-        isolated_long = self.bouts((300, 30))
-        out = bri.evaluate_window(short + isolated_long, self.fps, window_seconds=40, threshold=6)
-        self.assertEqual(out, isolated_long)
-
-    def test_no_warning_when_rule_can_fire(self):
-        with patch.object(config, "SHORT_BOUT_SECONDS", 6):
-            self.assertFalse(any("evaluate_window" in w for w in config.validate_config()))
 
 
 class ClipJoinTests(unittest.TestCase):

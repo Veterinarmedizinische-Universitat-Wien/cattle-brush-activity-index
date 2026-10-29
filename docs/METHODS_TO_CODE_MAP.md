@@ -27,7 +27,6 @@ thresholds and post-processing logic remain in `src/brush_rotation_activity_inde
 | Merge short gaps | `merge_close_periods` | `src/brush_rotation_activity_index.py` |
 | Low-amplitude bout filter | `filter_low_movement_bouts` | `src/brush_rotation_activity_index.py` |
 | Contextual neighbouring-bout filter | `filter_contextual_false_positives_with_edges` | `src/brush_rotation_activity_index.py` |
-| Clustered short-bout filter (no effect with study defaults, see CONFIGURATION.md) | `evaluate_window`, `is_within_threshold` | `src/brush_rotation_activity_index.py` |
 | Surrounding-window movement filter | `filter_low_movement_within_window` | `src/brush_rotation_activity_index.py` |
 | Final detector orchestration | `detect_rotation_periods_for_hour_legacy` | `src/brush_rotation_activity_index.py` |
 | Continuous hourly signal extraction | `build_continuous_hour_signal` | `src/brush_rotation_activity_index.py` |
@@ -60,7 +59,7 @@ crossing is evaluated on the original smoothed normalized signal.
 ### Post-processing
 
 The final detector includes the 2-s merge rule, normalized-amplitude/context
-filters, a short-bout window rule, a 4-min surrounding-window rule, and a
+filters, a 4-min surrounding-window rule, and a
 maximum-duration rule.
 
 ### Timing

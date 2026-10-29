@@ -10,6 +10,7 @@ import re
 import subprocess
 import tempfile
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 import cv2
 
@@ -33,15 +34,14 @@ def safe_run(cmd):
     return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
 
+@lru_cache(maxsize=1)
 def check_ffmpeg_available() -> bool:
+    """Checked on first use rather than at import time."""
     try:
         result = safe_run(["ffmpeg", "-version"])
         return result.returncode == 0
     except Exception:
         return False
-
-
-FFMPEG_AVAILABLE = check_ffmpeg_available()
 
 
 def sanitize_filename(s: str) -> str:
@@ -126,7 +126,7 @@ def parse_timestamp_from_filename(filename: str):
 # ============================================================
 
 def ffprobe_json(video_path):
-    if not FFMPEG_AVAILABLE:
+    if not check_ffmpeg_available():
         return None
 
     cmd = [
@@ -202,7 +202,7 @@ def reconstruct_dvr_timestamps(date_obj, time_fragments, fps):
 
 
 def extract_dvr_metadata_from_stream(video_path, stream_index, fps):
-    if not FFMPEG_AVAILABLE:
+    if not check_ffmpeg_available():
         return None
 
     tmp = tempfile.NamedTemporaryFile(delete=False).name
@@ -383,7 +383,10 @@ def get_video_basic_info(video_path):
     }
 
 
-def get_clip_start_info(video_path, allow_relative_time=False):
+def get_clip_start_info(video_path, allow_relative_time=False, require_dvr=None):
+    if require_dvr is None:
+        require_dvr = REQUIRE_DVR_TIMESTAMPS
+
     basic = get_video_basic_info(video_path)
     if basic is None:
         return None
@@ -397,7 +400,7 @@ def get_clip_start_info(video_path, allow_relative_time=False):
     if ts_info is None or len(ts_info["timestamps"]) == 0:
         return None
 
-    if REQUIRE_DVR_TIMESTAMPS and ts_info["timestamp_source"] != "dvr":
+    if require_dvr and ts_info["timestamp_source"] != "dvr":
         print(f"Skipping non-DVR timestamp file: {os.path.basename(video_path)}")
         return None
 

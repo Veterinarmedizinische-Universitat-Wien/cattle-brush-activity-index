@@ -11,8 +11,10 @@
 # 6) Run final detection on the ORIGINAL smoothed signal.
 # ============================================================
 
+import argparse
 import os
 from collections import defaultdict
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
@@ -27,7 +29,9 @@ from config import (
     CLAHE_DARK_MEAN_THRESHOLD,
     CLAHE_ONLY_IF_DARK,
     CLAHE_TILE_GRID,
+    CLIP_JOIN_MAX_GAP_SECONDS,
     DOWNSCALE,
+    EXPERIMENT_NAME,
     PROCESSING_HEIGHT,
     ROI_REFERENCE_SIZES,
     FRAME_SKIP_ANNOTATION,
@@ -53,9 +57,8 @@ from config import (
     ROBUST_NORM_LOW_PCT,
     ROI,
     ROI_ALL,
+    ROI_REFERENCE_SIZE,
     SAVE_ROI_PREVIEW,
-    SHORT_BOUT_SECONDS,
-    SHORT_BOUT_WINDOW_SECONDS,
     SHOW_ROI_PREVIEW,
     SMOOTH_WINDOW,
     THRESHOLD_REF_PERCENTILE,
@@ -67,33 +70,78 @@ from config import (
     USE_THRESHOLD_SPIKE_SUPPRESSION,
     WRITE_ANNOTATED_VIDEO,
     WRITE_HOUR_PLOTS,
-    annotated_video_folder,
+    base_output_folder,
     input_folder,
-    output_folder,
-    plot_folder,
-    preview_folder,
 )
 from io_utils import (
-    ensure_directories,
     format_relative_timestamp,
     get_clip_start_info,
     is_video_file,
     sanitize_filename,
 )
 
-# Create the configured output directories once at startup.
-ensure_directories(output_folder, annotated_video_folder, plot_folder, preview_folder)
+# ============================================================
+# RUN CONTEXT
+# ============================================================
 
-rotation_data = []
-gap_report = []
-hour_summary = []
-file_timestamp_report = []
+@dataclass
+class RunContext:
+    """Output location, run options and the report rows collected during a run.
+
+    Replaces the former module-level globals so that importing this module has
+    no side effects and standalone relative-time runs get their own context.
+    """
+    output_folder: str
+    roi_polygon: np.ndarray
+    roi_reference_size: tuple = None  # (width, height); None = native frame size
+    write_annotated_video: bool = WRITE_ANNOTATED_VIDEO
+    write_hour_plots: bool = WRITE_HOUR_PLOTS
+    save_roi_preview: bool = SAVE_ROI_PREVIEW
+    show_roi_preview: bool = SHOW_ROI_PREVIEW
+    require_dvr: bool = REQUIRE_DVR_TIMESTAMPS
+    allow_relative_time: bool = ALLOW_STANDALONE_RELATIVE_TIME
+    rotation_data: list = field(default_factory=list)
+    gap_report: list = field(default_factory=list)
+    hour_summary: list = field(default_factory=list)
+    file_timestamp_report: list = field(default_factory=list)
+    clip_diagnostics: list = field(default_factory=list)
+
+    @property
+    def annotated_video_folder(self):
+        return os.path.join(self.output_folder, "annotated_videos")
+
+    @property
+    def plot_folder(self):
+        return os.path.join(self.output_folder, "plots")
+
+    @property
+    def preview_folder(self):
+        return os.path.join(self.output_folder, "previews")
+
+    def ensure_directories(self):
+        for path in (self.output_folder, self.annotated_video_folder,
+                     self.plot_folder, self.preview_folder):
+            os.makedirs(path, exist_ok=True)
+
+    def child(self, output_folder):
+        """Same options, new output folder, empty reports."""
+        return RunContext(
+            output_folder=output_folder,
+            roi_polygon=self.roi_polygon,
+            roi_reference_size=self.roi_reference_size,
+            write_annotated_video=self.write_annotated_video,
+            write_hour_plots=self.write_hour_plots,
+            save_roi_preview=self.save_roi_preview,
+            show_roi_preview=self.show_roi_preview,
+            require_dvr=self.require_dvr,
+            allow_relative_time=self.allow_relative_time,
+        )
 
 # ============================================================
 # INPUT GROUPING
 # ============================================================
 
-def build_hour_buckets(folder: str):
+def build_hour_buckets(folder: str, ctx: RunContext):
     """
     Build the original absolute-time hour buckets and keep untimestamped videos
     separate for standalone relative-time processing.
@@ -109,16 +157,14 @@ def build_hour_buckets(folder: str):
         if is_video_file(file)
     ]
 
-    allow_relative_time = (
-        ALLOW_STANDALONE_RELATIVE_TIME
-        and not REQUIRE_DVR_TIMESTAMPS
-    )
+    allow_relative_time = ctx.allow_relative_time and not ctx.require_dvr
 
     for file in video_files:
         video_path = os.path.join(folder, file)
         start_info = get_clip_start_info(
             video_path,
-            allow_relative_time=allow_relative_time
+            allow_relative_time=allow_relative_time,
+            require_dvr=ctx.require_dvr,
         )
 
         if start_info is None:
@@ -137,7 +183,7 @@ def build_hour_buckets(folder: str):
         hour_key = ts.replace(minute=0, second=0, microsecond=0)
         buckets[hour_key].append(start_info)
 
-        file_timestamp_report.append({
+        ctx.file_timestamp_report.append({
             "Video File": file,
             "Start Timestamp": ts.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3],
             "Timestamp Source": start_info["timestamp_source"],
@@ -183,7 +229,7 @@ def diagnose_timestamps(timestamps, fps):
         "median_interval": median,
     }
 
-def detect_timestamp_gaps(video_name, timestamps):
+def detect_timestamp_gaps(video_name, timestamps, gap_report):
     if len(timestamps) < 2:
         return
 
@@ -275,7 +321,14 @@ def moving_average_with_tail(data, window_size):
 
     return smoothed.astype(np.float32)
 
-def robust_log_normalize(signal, low_pct=5, high_pct=95, use_log=True):
+def robust_log_normalize(signal, low_pct=5, high_pct=95, use_log=True, valid_mask=None):
+    """Log + percentile normalisation.
+
+    ``valid_mask`` marks frames with a real motion score. Placeholder frames
+    (first frame after a reset, frames that failed to decode/process) are
+    excluded from the percentile references but still normalised, so the output
+    keeps one value per frame.
+    """
     signal = np.asarray(signal, dtype=np.float32)
     if signal.size == 0:
         return np.array([], dtype=np.float32), {
@@ -292,8 +345,14 @@ def robust_log_normalize(signal, low_pct=5, high_pct=95, use_log=True):
     else:
         transform = "linear"
 
-    lo = float(np.percentile(x, low_pct))
-    hi = float(np.percentile(x, high_pct))
+    ref = x
+    if valid_mask is not None:
+        valid_mask = np.asarray(valid_mask, dtype=bool)
+        if valid_mask.shape == x.shape and valid_mask.any():
+            ref = x[valid_mask]
+
+    lo = float(np.percentile(ref, low_pct))
+    hi = float(np.percentile(ref, high_pct))
 
     if hi - lo < 1e-8:
         norm = np.zeros_like(x, dtype=np.float32)
@@ -350,13 +409,24 @@ def enhance_low_light(frame):
     enhanced_lab = cv2.merge((l, a, b))
     return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
 
-def get_roi_from_polygon_legacy(frame, polygon):
-    mask = np.zeros_like(frame, dtype=np.uint8)
+def build_legacy_roi_mask(shape, polygon):
+    """ROI mask exactly as the original per-frame code built it.
+
+    Note: on a 3-channel shape, cv2.fillPoly with the scalar 255 fills only the
+    first (blue) channel, so the colour ROI keeps blue and zeroes green/red.
+    This is the behaviour the study results were produced with and is kept.
+    """
+    mask = np.zeros(shape, dtype=np.uint8)
     cv2.fillPoly(mask, [polygon], 255)
+    return mask
+
+def get_roi_from_polygon_legacy(frame, polygon, mask=None):
+    if mask is None:
+        mask = build_legacy_roi_mask(frame.shape, polygon)
     return cv2.bitwise_and(frame, mask)
 
-def preprocess_frame_for_white_legacy(frame, polygon):
-    roi = get_roi_from_polygon_legacy(frame, polygon)
+def preprocess_frame_for_white_legacy(frame, polygon, mask=None):
+    roi = get_roi_from_polygon_legacy(frame, polygon, mask)
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     normalized_l = cv2.normalize(l, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
@@ -467,6 +537,7 @@ def compute_segment_threshold_curve(
     low_pct=0.62,
     high_pct=0.50,
     ref_percentile=99.5,
+    return_reference=False,
 ):
     """
     Robust segment threshold:
@@ -475,14 +546,19 @@ def compute_segment_threshold_curve(
       - threshold = pct * seg_ref
 
     This makes the threshold robust to short outlier spikes.
+
+    With ``return_reference=True`` the per-frame segment reference is returned
+    as well, so callers can report the multiplier actually applied.
     """
     signal = np.asarray(smoothed_diffs, dtype=np.float32)
     n = len(signal)
     if n == 0:
-        return np.array([], dtype=np.float32)
+        empty = np.array([], dtype=np.float32)
+        return (empty, empty.copy()) if return_reference else empty
 
     seg_frames = max(1, int(segment_minutes * 60 * max(1e-6, fps)))
     threshold_curve = np.zeros(n, dtype=np.float32)
+    reference_curve = np.zeros(n, dtype=np.float32)
 
     for start in range(0, n, seg_frames):
         end = min(start + seg_frames, n)
@@ -500,7 +576,10 @@ def compute_segment_threshold_curve(
             seg_thr = pct * seg_ref
 
         threshold_curve[start:end] = seg_thr
+        reference_curve[start:end] = seg_ref
 
+    if return_reference:
+        return threshold_curve, reference_curve
     return threshold_curve
 
 def detect_periods_from_threshold_frame_based(signal, threshold_curve, fps, min_duration_seconds):
@@ -600,42 +679,6 @@ def filter_contextual_false_positives_with_edges(
 
     return filtered_periods
 
-def is_within_threshold(bout_durations, threshold=4):
-    return all(duration < threshold for duration in bout_durations)
-
-def evaluate_window(rotation_periods, fps, window_seconds=40, threshold=4):
-    filtered_bouts = []
-    window_frames = int(window_seconds * max(1e-6, fps))
-
-    for i, (start, end) in enumerate(rotation_periods):
-        window_bouts = []
-        for j in range(i, len(rotation_periods)):
-            other_start, other_end = rotation_periods[j]
-            if other_start <= start + window_frames:
-                window_bouts.append((other_start, other_end))
-            else:
-                break
-
-        bout_durations = [(e - s + 1) / max(1e-6, fps) for s, e in window_bouts]
-
-        if is_within_threshold(bout_durations, threshold=threshold):
-            surrounding_bouts = []
-
-            if i > 0:
-                ps, pe = rotation_periods[i - 1]
-                if (pe - ps + 1) / max(1e-6, fps) <= 5:
-                    surrounding_bouts.append((ps, pe))
-
-            if i + 1 < len(rotation_periods):
-                ns, ne = rotation_periods[i + 1]
-                if (ne - ns + 1) / max(1e-6, fps) <= 5:
-                    surrounding_bouts.append((ns, ne))
-
-            filtered_bouts.extend(window_bouts + surrounding_bouts)
-
-    filtered_set = set(filtered_bouts)
-    return [bout for bout in rotation_periods if bout not in filtered_set]
-
 def filter_low_movement_within_window(
     rotation_periods,
     smoothed_diffs,
@@ -658,32 +701,126 @@ def filter_low_movement_within_window(
 # CONTINUOUS HOUR SIGNAL EXTRACTION
 # ============================================================
 
-def prepare_analysis_frame(frame, roi_polygon, roi_reference_size):
-    """Resize first, then map the configured polygon into processed coordinates."""
-    h, w = frame.shape[:2]
-    if not PROCESSING_HEIGHT:
-        return frame, roi_polygon
-    new_h = int(PROCESSING_HEIGHT)
-    new_w = max(2, int(round(w * new_h / h)))
+def find_roi_preset(roi_polygon):
+    """Name of the ROI_ALL preset equal to ``roi_polygon``, or None for a custom polygon."""
+    polygon = np.asarray(roi_polygon)
+    for key, preset in ROI_ALL.items():
+        if preset.shape == polygon.shape and np.array_equal(preset, polygon):
+            return key
+    return None
+
+
+def resolve_roi_reference_size(roi_polygon, explicit_size=None):
+    """Reference (width, height) for ``roi_polygon``, resolved once per run.
+
+    An explicit size wins; a preset uses ROI_REFERENCE_SIZES; a custom polygon
+    returns None, meaning the video's native resolution.
+    """
+    if explicit_size is not None:
+        return tuple(explicit_size)
+    key = find_roi_preset(roi_polygon)
+    return ROI_REFERENCE_SIZES.get(key) if key is not None else None
+
+
+def scale_polygon(roi_polygon, from_size, to_size):
+    """Map polygon coordinates drawn on a ``from_size`` frame to ``to_size``."""
+    from_w, from_h = from_size
+    to_w, to_h = to_size
+    return np.rint(
+        np.asarray(roi_polygon, dtype=np.float64) * [to_w / from_w, to_h / from_h]
+    ).astype(np.int32)
+
+
+def analysis_size_for(frame_w, frame_h, processing_height=None):
+    """(width, height) to resize to, or None when frames are used as decoded.
+
+    Frames are never upscaled: a target at or above the native height means no
+    resize (no copy, no interpolation).
+    """
+    if not processing_height or int(processing_height) >= frame_h:
+        return None
+    new_h = int(processing_height)
+    new_w = max(2, int(round(frame_w * new_h / frame_h)))
     new_w += new_w % 2
-    small = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
-    ref_w, ref_h = roi_reference_size
-    scaled = np.rint(roi_polygon.astype(np.float64) * [new_w / ref_w, new_h / ref_h]).astype(np.int32)
-    return small, scaled
+    return new_w, new_h
 
 
-def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
+@dataclass
+class AnalysisGeometry:
+    """Per-video analysis setup, computed once and reused for every frame."""
+    frame_shape: tuple          # (height, width) of decoded frames
+    target_size: tuple          # (width, height) to resize to, or None
+    polygon: np.ndarray         # ROI polygon in analysis-frame coordinates
+    mask_color: np.ndarray      # legacy ROI mask for the BGR analysis frame
+    mask_gray: np.ndarray       # ROI mask for the grayscale analysis frame
+
+    def prepare(self, frame):
+        if self.target_size is None:
+            return frame
+        return cv2.resize(frame, self.target_size, interpolation=cv2.INTER_AREA)
+
+
+def build_analysis_geometry(frame_w, frame_h, roi_polygon, roi_reference_size=None,
+                            processing_height=None):
+    if roi_reference_size is None:
+        roi_reference_size = (frame_w, frame_h)
+    target = analysis_size_for(frame_w, frame_h, processing_height)
+    analysis_w, analysis_h = target if target is not None else (frame_w, frame_h)
+    polygon = scale_polygon(roi_polygon, roi_reference_size, (analysis_w, analysis_h))
+    return AnalysisGeometry(
+        frame_shape=(frame_h, frame_w),
+        target_size=target,
+        polygon=polygon,
+        mask_color=build_legacy_roi_mask((analysis_h, analysis_w, 3), polygon),
+        mask_gray=build_legacy_roi_mask((analysis_h, analysis_w), polygon),
+    )
+
+
+def prepare_analysis_frame(frame, roi_polygon, roi_reference_size=None):
+    """Resize first, then map the configured polygon into processed coordinates.
+
+    ``roi_reference_size`` is the (width, height) the polygon was drawn on;
+    None means the polygon is in this frame's native coordinates.
     """
-    Builds one continuous RAW motion signal for the whole hour, preserving
-    prev_roi across clip boundaries exactly like a truly concatenated video.
+    h, w = frame.shape[:2]
+    geometry = build_analysis_geometry(w, h, roi_polygon, roi_reference_size, PROCESSING_HEIGHT)
+    return geometry.prepare(frame), geometry.polygon
+
+
+def clips_are_contiguous(prev_last_ts, next_first_ts, max_gap_seconds=CLIP_JOIN_MAX_GAP_SECONDS):
+    """True when the next clip starts within ``max_gap_seconds`` of the last frame.
+
+    Overlaps (negative gaps, e.g. from rounded filename timestamps) count as
+    contiguous; only forward gaps larger than the tolerance break the join.
     """
+    if prev_last_ts is None or next_first_ts is None:
+        return False
+    return (next_first_ts - prev_last_ts).total_seconds() <= max_gap_seconds
+
+
+def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
+    """
+    Builds one continuous RAW motion signal for the whole hour.
+
+    prev_roi is preserved across clip boundaries like a concatenated video, but
+    only when the clips are contiguous in time (see CLIP_JOIN_MAX_GAP_SECONDS).
+    Otherwise it is reset so unrelated frames are not differenced.
+
+    Frames without a real motion score (first frame after a reset, frames that
+    failed to process) are flagged in ``combined_valid`` and excluded from the
+    normalisation references.
+    """
+    roi_polygon = ctx.roi_polygon
     combined_diffs = []
+    combined_valid = []
     combined_timestamps = []
     combined_video_index = []
     combined_local_frame = []
     clip_results = []
 
     prev_roi = None
+    prev_last_ts = None
+    clip_join_resets = 0
 
     for clip_idx, clip_info in enumerate(clip_infos):
         video_path = clip_info["video_path"]
@@ -695,19 +832,36 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
         timestamp_source = clip_info["timestamp_source"]
 
         diagnostics = diagnose_timestamps(timestamps, fps)
-        detect_timestamp_gaps(video_file, timestamps)
+        detect_timestamp_gaps(video_file, timestamps, ctx.gap_report)
 
-        if SAVE_ROI_PREVIEW or SHOW_ROI_PREVIEW:
+        roi_reference_size = ctx.roi_reference_size or (frame_width, frame_height)
+        ref_aspect = roi_reference_size[0] / roi_reference_size[1]
+        clip_aspect = frame_width / frame_height
+        if abs(ref_aspect - clip_aspect) / ref_aspect > 0.01:
+            print(
+                f"WARNING: {video_file} is {frame_width}x{frame_height} but the ROI was drawn on "
+                f"{roi_reference_size[0]}x{roi_reference_size[1]} (different aspect ratio); "
+                "the ROI will be stretched. Check the ROI preview or define a polygon for this camera."
+            )
+        roi_polygon_native = scale_polygon(roi_polygon, roi_reference_size, (frame_width, frame_height))
+
+        if ctx.save_roi_preview or ctx.show_roi_preview:
             preview_path = os.path.join(
-                preview_folder,
+                ctx.preview_folder,
                 os.path.splitext(video_file)[0] + "_roi_preview.png"
             )
             display_first_frame_with_roi(
                 video_path,
-                roi_polygon,
-                save_path=preview_path if SAVE_ROI_PREVIEW else None,
-                show=SHOW_ROI_PREVIEW
+                roi_polygon_native,
+                save_path=preview_path if ctx.save_roi_preview else None,
+                show=ctx.show_roi_preview
             )
+
+        if prev_roi is not None and timestamps and not clips_are_contiguous(prev_last_ts, timestamps[0]):
+            gap_s = (timestamps[0] - prev_last_ts).total_seconds()
+            print(f"Clip gap of {gap_s:.2f} s before {video_file}: resetting previous-frame state.")
+            prev_roi = None
+            clip_join_resets += 1
 
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -715,6 +869,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
             continue
 
         clip_frame_diffs = []
+        clip_valid = []
         actual_timestamps = []
         local_idx_map = []
 
@@ -722,26 +877,49 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
         pbar = tqdm(total=total_frames_target, desc=f"Continuous signal [{video_file}]")
         local_frame_idx = 0
 
+        # Resize target, scaled ROI polygon and ROI masks: once per video.
+        geometry = build_analysis_geometry(
+            frame_width, frame_height, roi_polygon, roi_reference_size, PROCESSING_HEIGHT
+        )
+
         while local_frame_idx < total_frames_target:
             ret, frame = cap.read()
             if not ret:
                 break
 
             try:
-                analysis_frame, analysis_polygon = prepare_analysis_frame(
-                    frame, roi_polygon, ROI_REFERENCE_SIZES.get(next((k for k, v in ROI_ALL.items() if np.array_equal(v, roi_polygon)), "B"), (frame.shape[1], frame.shape[0]))
-                )
+                if frame.shape[:2] != geometry.frame_shape:
+                    # Resolution changed mid-file (some DVR/stream recordings):
+                    # rebuild the geometry for the new size instead of mis-scaling.
+                    new_h, new_w = frame.shape[:2]
+                    print(
+                        f"WARNING: {video_file} frame {local_frame_idx} is {new_w}x{new_h}, "
+                        f"expected {geometry.frame_shape[1]}x{geometry.frame_shape[0]}; "
+                        "rebuilding ROI geometry."
+                    )
+                    geometry = build_analysis_geometry(
+                        new_w, new_h, roi_polygon, roi_reference_size, PROCESSING_HEIGHT
+                    )
+                    # The previous ROI has the old size and cannot be blended or
+                    # differenced with the new frames; start a new run.
+                    prev_roi = None
+
+                analysis_frame = geometry.prepare(frame)
                 enhanced_frame = enhance_low_light(analysis_frame)
-                preprocessed_frame = preprocess_frame_for_white_legacy(enhanced_frame, analysis_polygon)
+                preprocessed_frame = preprocess_frame_for_white_legacy(
+                    enhanced_frame, geometry.polygon, geometry.mask_color
+                )
                 gray_frame = cv2.cvtColor(preprocessed_frame, cv2.COLOR_BGR2GRAY)
-                roi = get_roi_from_polygon_legacy(gray_frame, analysis_polygon)
+                roi = get_roi_from_polygon_legacy(gray_frame, geometry.polygon, geometry.mask_gray)
                 roi = blend_with_previous(roi, prev_roi, alpha=BLEND_ALPHA)
 
-                if prev_roi is not None:
+                if prev_roi is not None and prev_roi.shape == roi.shape:
                     movement_score = compute_motion_score_sum_abs_diff(prev_roi, roi)
                     clip_frame_diffs.append(movement_score)
+                    clip_valid.append(True)
                 else:
                     clip_frame_diffs.append(0.0)
+                    clip_valid.append(False)
 
                 prev_roi = roi
 
@@ -751,6 +929,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
             except Exception as e:
                 print(f"Error processing frame {local_frame_idx} in {video_file}: {e}")
                 clip_frame_diffs.append(0.0)
+                clip_valid.append(False)
                 actual_timestamps.append(timestamps[local_frame_idx])
                 local_idx_map.append(local_frame_idx)
 
@@ -763,6 +942,22 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
         if len(clip_frame_diffs) == 0:
             print(f"No usable frames in {video_file}")
             continue
+
+        prev_last_ts = actual_timestamps[-1]
+
+        ctx.clip_diagnostics.append({
+            "Video File": video_file,
+            "Timestamp Source": timestamp_source,
+            "Container FPS": diagnostics["container_fps"],
+            "Estimated FPS": diagnostics["estimated_fps"],
+            "Median Interval (s)": diagnostics["median_interval"],
+            "Interval Std (s)": diagnostics["timing_std"],
+            "Dropped-Frame Gaps": diagnostics["dropped_frames"],
+            "Duplicate-Frame Gaps": diagnostics["duplicate_frames"],
+            "Frames Decoded": len(clip_frame_diffs),
+            "Frames Expected": total_frames_target,
+            "Placeholder Frames": int(len(clip_valid) - sum(clip_valid)),
+        })
 
         clip_result = {
             "clip_idx": clip_idx,
@@ -779,12 +974,13 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
             "overlay_id": clip_info["overlay_id"],
             "timestamp_source": timestamp_source,
             "diagnostics": diagnostics,
-            "roi_polygon": roi_polygon.copy(),
+            "roi_polygon": roi_polygon_native,
         }
 
         global_start_idx = len(combined_diffs)
 
         combined_diffs.extend(clip_frame_diffs)
+        combined_valid.extend(clip_valid)
         combined_timestamps.extend(actual_timestamps)
         combined_video_index.extend([clip_idx] * len(clip_frame_diffs))
         combined_local_frame.extend(local_idx_map)
@@ -800,6 +996,8 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
         "hour_key": hour_key,
         "clip_results": clip_results,
         "combined_diffs_raw": np.asarray(combined_diffs, dtype=np.float32),
+        "combined_valid": np.asarray(combined_valid, dtype=bool),
+        "clip_join_resets": clip_join_resets,
         "combined_timestamps": combined_timestamps,
         "combined_video_index": np.asarray(combined_video_index, dtype=int) if combined_video_index else np.array([], dtype=int),
         "combined_local_frame": np.asarray(combined_local_frame, dtype=int) if combined_local_frame else np.array([], dtype=int),
@@ -809,20 +1007,27 @@ def build_continuous_hour_signal(hour_key, clip_infos, roi_polygon):
 # RUN FULL DETECTOR ON NORMALIZED HOUR SIGNAL
 # ============================================================
 
-def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters):
+def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters, valid_mask=None):
+    """Run the full detector.
+
+    Returns (periods, smoothed, threshold_curve, normalized, norm_info,
+    threshold_signal, threshold_reference_curve).
+    """
     # 1) normalize original signal
     normalized_diffs, norm_info = robust_log_normalize(
         combined_diffs_raw,
         low_pct=ROBUST_NORM_LOW_PCT,
         high_pct=ROBUST_NORM_HIGH_PCT,
-        use_log=USE_LOG_COMPRESSION
+        use_log=USE_LOG_COMPRESSION,
+        valid_mask=valid_mask,
     )
 
     # 2) smooth original signal
     smoothed_diffs = moving_average_with_tail(normalized_diffs, SMOOTH_WINDOW)
 
     if len(smoothed_diffs) == 0:
-        return [], smoothed_diffs, np.array([], dtype=np.float32), normalized_diffs, norm_info, np.array([], dtype=np.float32)
+        empty = np.array([], dtype=np.float32)
+        return [], smoothed_diffs, empty, normalized_diffs, norm_info, empty.copy(), empty.copy()
 
     # 3) build threshold-only signal
     if USE_THRESHOLD_SPIKE_SUPPRESSION:
@@ -837,14 +1042,15 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters)
         threshold_signal = smoothed_diffs.copy()
 
     # 4) compute robust threshold from threshold-only signal
-    threshold_curve = compute_segment_threshold_curve(
+    threshold_curve, threshold_reference = compute_segment_threshold_curve(
         smoothed_diffs=threshold_signal,
         fps=fps_for_filters,
         segment_minutes=LEGACY_SEGMENT_MINUTES,
         high_threshold=LEGACY_SEGMENT_MAX_SWITCH,
         low_pct=LEGACY_LOW_PCT,
         high_pct=LEGACY_HIGH_PCT,
-        ref_percentile=THRESHOLD_REF_PERCENTILE
+        ref_percentile=THRESHOLD_REF_PERCENTILE,
+        return_reference=True,
     )
 
     # 5) detect on original smoothed signal
@@ -876,13 +1082,6 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters)
         pixel_threshold_high=LEGACY_PIXEL_THRESHOLD_HIGH
     )
 
-    rotation_periods = evaluate_window(
-        rotation_periods,
-        fps_for_filters,
-        window_seconds=SHORT_BOUT_WINDOW_SECONDS,
-        threshold=SHORT_BOUT_SECONDS
-    )
-
     rotation_periods = filter_low_movement_within_window(
         rotation_periods,
         smoothed_diffs,
@@ -897,7 +1096,8 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters)
         if duration <= MAX_BOUT_SECONDS:
             filtered_by_duration.append((s, e))
 
-    return filtered_by_duration, smoothed_diffs, threshold_curve, normalized_diffs, norm_info, threshold_signal
+    return (filtered_by_duration, smoothed_diffs, threshold_curve, normalized_diffs,
+            norm_info, threshold_signal, threshold_reference)
 
 # ============================================================
 # PLOT
@@ -1008,30 +1208,27 @@ def build_cumulative_rotation_seconds_global(length, rotation_periods, fps):
 
     return cumulative
 
-def compute_segment_percentage_for_frame(smoothed_diffs, threshold_curve, fps, idx):
-    seg_frames = max(1, int(LEGACY_SEGMENT_MINUTES * 60 * max(1e-6, fps)))
-    seg_start = (idx // seg_frames) * seg_frames
-    seg_end = min(seg_start + seg_frames, len(smoothed_diffs))
+def threshold_percentage_at(threshold_curve, reference_curve, idx):
+    """Multiplier applied at ``idx`` (threshold / segment reference), in percent.
 
-    if seg_end <= seg_start:
+    Uses the reference computed from the threshold-only signal, i.e. the value
+    the detector actually used.
+    """
+    if len(threshold_curve) == 0 or len(reference_curve) == 0:
         return 0
-
-    seg_ref = float(np.percentile(smoothed_diffs[seg_start:seg_end], THRESHOLD_REF_PERCENTILE))
-    thr = float(threshold_curve[idx])
-
+    seg_ref = float(reference_curve[idx])
     if seg_ref <= 0:
         return 0
-
-    return int(round(100.0 * thr / seg_ref))
+    return int(round(100.0 * float(threshold_curve[idx]) / seg_ref))
 
 def write_annotated_video_for_clip_legacy(
     vr,
     out_path,
     hour_smoothed_diffs,
     hour_threshold_curve,
+    hour_threshold_reference,
     hour_rotation_mask,
     hour_cumulative_rotation_seconds,
-    fps_for_filters
 ):
     video_path = vr["video_path"]
     fps = vr["fps"]
@@ -1049,7 +1246,8 @@ def write_annotated_video_for_clip_legacy(
     new_w = max(2, int(frame_width * DOWNSCALE))
     new_h = max(2, int(frame_height * DOWNSCALE))
     out_fps = max(1.0, vr.get("actual_fps", fps) / max(1, FRAME_SKIP_ANNOTATION))
-    roi_polygon_scaled = (roi_polygon.astype(np.float32) * DOWNSCALE).astype(np.int32)
+    # roi_polygon is already in this clip's native frame coordinates.
+    roi_polygon_scaled = scale_polygon(roi_polygon, (frame_width, frame_height), (new_w, new_h))
 
     writer = cv2.VideoWriter(
         out_path,
@@ -1077,17 +1275,13 @@ def write_annotated_video_for_clip_legacy(
         frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
         frame = cv2.polylines(frame, [roi_polygon_scaled], True, (0, 255, 0), 2)
 
-        sm_idx = global_idx - SMOOTH_WINDOW + 1
-        sm_idx = max(0, min(len(hour_smoothed_diffs) - 1, sm_idx)) if len(hour_smoothed_diffs) > 0 else 0
+        # Same frame index as the detector and the rotation mask.
+        sm_idx = max(0, min(len(hour_smoothed_diffs) - 1, global_idx)) if len(hour_smoothed_diffs) > 0 else 0
 
         smoothed_score = float(hour_smoothed_diffs[sm_idx]) if len(hour_smoothed_diffs) > 0 else 0.0
         local_thr = float(hour_threshold_curve[sm_idx]) if len(hour_threshold_curve) > 0 else 0.0
-        pct_used = compute_segment_percentage_for_frame(
-            hour_smoothed_diffs,
-            hour_threshold_curve,
-            fps_for_filters,
-            sm_idx
-        ) if len(hour_smoothed_diffs) > 0 else 0
+        pct_used = threshold_percentage_at(hour_threshold_curve, hour_threshold_reference, sm_idx) \
+            if len(hour_threshold_curve) > 0 else 0
 
         if vr.get("timestamp_source") == "relative":
             time_text = format_relative_timestamp(timestamps[frame_idx])
@@ -1140,14 +1334,12 @@ def write_annotated_video_for_clip_legacy(
 # HOUR PROCESSING
 # ============================================================
 
-def process_hour_bucket(hour_key, clip_infos):
-    roi_polygon = np.asarray(ROI, dtype=np.int32)
-
+def process_hour_bucket(hour_key, clip_infos, ctx: RunContext):
     print("\n" + "=" * 80)
     print(f"PROCESSING HOUR BUCKET: {hour_key.strftime('%Y-%m-%d %H:00')}")
     print("=" * 80)
 
-    hour_agg = build_continuous_hour_signal(hour_key, clip_infos, roi_polygon)
+    hour_agg = build_continuous_hour_signal(hour_key, clip_infos, ctx)
 
     if len(hour_agg["clip_results"]) == 0 or len(hour_agg["combined_diffs_raw"]) == 0:
         print("No valid videos in this hour bucket.")
@@ -1159,8 +1351,10 @@ def process_hour_bucket(hour_key, clip_infos):
     if PRINT_HOUR_SIGNAL_STATS:
         print_signal_stats("RAW hour signal", hour_agg["combined_diffs_raw"])
 
-    hour_rotation_periods, smoothed_diffs, threshold_curve, normalized_diffs, norm_info, threshold_signal = \
-        detect_rotation_periods_for_hour_legacy(hour_agg["combined_diffs_raw"], fps_for_filters)
+    (hour_rotation_periods, smoothed_diffs, threshold_curve, normalized_diffs,
+     norm_info, threshold_signal, threshold_reference) = detect_rotation_periods_for_hour_legacy(
+        hour_agg["combined_diffs_raw"], fps_for_filters, valid_mask=hour_agg["combined_valid"]
+    )
 
     if PRINT_HOUR_SIGNAL_STATS:
         print_signal_stats("NORMALIZED hour signal", normalized_diffs)
@@ -1196,7 +1390,7 @@ def process_hour_bucket(hour_key, clip_infos):
             bout_start_text = bout_start_ts.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
             bout_end_text = bout_end_ts.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3]
 
-        rotation_data.append({
+        ctx.rotation_data.append({
             "Hour Bucket": hour_bucket_label,
             "Start File": start_vr["video_file"] if start_vr else "",
             "End File": end_vr["video_file"] if end_vr else "",
@@ -1206,13 +1400,16 @@ def process_hour_bucket(hour_key, clip_infos):
             "Duration (seconds, frame-based)": duration,
         })
 
-    hour_summary.append({
+    ctx.hour_summary.append({
         "Hour Bucket": "relative" if is_relative_run else hour_key.strftime("%Y-%m-%d %H:00"),
         "Num Files": len(hour_agg["clip_results"]),
         "Num Events": len(hour_rotation_periods),
         "First File": hour_agg["clip_results"][0]["video_file"],
         "Last File": hour_agg["clip_results"][-1]["video_file"],
         "Signal Frames": len(hour_agg["combined_diffs_raw"]),
+        "Placeholder Frames (excluded from normalization refs)": int((~hour_agg["combined_valid"]).sum()),
+        "Clip Join Resets": hour_agg["clip_join_resets"],
+        "FPS Used For Filters": fps_for_filters,
         "Normalization Transform": norm_info["transform"],
         "Norm Low Ref": norm_info["low_ref"],
         "Norm High Ref": norm_info["high_ref"],
@@ -1224,18 +1421,18 @@ def process_hour_bucket(hour_key, clip_infos):
         "Spike Isolation Gap Seconds": THRESHOLD_SPIKE_ISOLATION_GAP_SECONDS,
     })
 
-    if WRITE_HOUR_PLOTS:
+    if ctx.write_hour_plots:
         if is_relative_run:
             source_stem = os.path.splitext(hour_agg["clip_results"][0]["video_file"])[0]
             source_label = source_stem
             plot_path = os.path.join(
-                plot_folder,
+                ctx.plot_folder,
                 f"{sanitize_filename(source_stem)}_movement.png"
             )
         else:
             source_label = None
             plot_path = os.path.join(
-                plot_folder,
+                ctx.plot_folder,
                 f"{hour_key.strftime('%Y%m%d_%H00')}_movement.png"
             )
 
@@ -1258,139 +1455,163 @@ def process_hour_bucket(hour_key, clip_infos):
         fps_for_filters
     )
 
-    if WRITE_ANNOTATED_VIDEO:
+    if ctx.write_annotated_video:
         for vr in hour_agg["clip_results"]:
             out_name = os.path.splitext(vr["video_file"])[0] + "_legacy_annotated" + OUTPUT_EXT
-            out_path = os.path.join(annotated_video_folder, sanitize_filename(out_name))
+            out_path = os.path.join(ctx.annotated_video_folder, sanitize_filename(out_name))
 
             write_annotated_video_for_clip_legacy(
                 vr=vr,
                 out_path=out_path,
                 hour_smoothed_diffs=smoothed_diffs,
                 hour_threshold_curve=threshold_curve,
+                hour_threshold_reference=threshold_reference,
                 hour_rotation_mask=hour_rotation_mask,
                 hour_cumulative_rotation_seconds=hour_cumulative_rotation_seconds,
-                fps_for_filters=fps_for_filters
             )
 
 # ============================================================
 # REPORT WRITING
 # ============================================================
 
-def write_reports(report_output_folder):
-    os.makedirs(report_output_folder, exist_ok=True)
+REPORT_COLUMNS = {
+    "rotation_summary.csv": [
+        "Hour Bucket", "Start File", "End File", "Timestamp Source",
+        "Bout Start", "Bout End", "Duration (seconds, frame-based)",
+    ],
+    "timestamp_gap_report.csv": [
+        "Video File", "Frame Index", "Timestamp Before", "Timestamp After",
+        "Delta Seconds", "Expected Interval", "Gap Type",
+    ],
+}
 
-    df = pd.DataFrame(rotation_data)
-    excel_path = os.path.join(report_output_folder, "rotation_summary.xlsx")
-    df.to_excel(excel_path, index=False)
-    print("Summary saved:", excel_path)
 
-    hour_df = pd.DataFrame(hour_summary)
-    hour_excel_path = os.path.join(report_output_folder, "hour_bucket_summary.xlsx")
-    hour_df.to_excel(hour_excel_path, index=False)
-    print("Hour summary saved:", hour_excel_path)
+def write_reports(ctx: RunContext):
+    """Write every report as UTF-8 CSV. All files are always written (possibly
+    header-only) so each run produces the same set of outputs."""
+    os.makedirs(ctx.output_folder, exist_ok=True)
 
-    ts_df = pd.DataFrame(file_timestamp_report)
-    ts_excel_path = os.path.join(report_output_folder, "file_timestamp_report.xlsx")
-    ts_df.to_excel(ts_excel_path, index=False)
-    print("File timestamp report saved:", ts_excel_path)
+    reports = [
+        ("rotation_summary.csv", ctx.rotation_data),
+        ("hour_bucket_summary.csv", ctx.hour_summary),
+        ("file_timestamp_report.csv", ctx.file_timestamp_report),
+        ("clip_timing_diagnostics.csv", ctx.clip_diagnostics),
+        ("timestamp_gap_report.csv", ctx.gap_report),
+    ]
+    for name, rows in reports:
+        df = pd.DataFrame(rows, columns=REPORT_COLUMNS.get(name))
+        path = os.path.join(ctx.output_folder, name)
+        df.to_csv(path, index=False, encoding="utf-8")
+        print(f"Saved {name} ({len(df)} rows):", path)
 
-    if len(gap_report) > 0:
-        gap_df = pd.DataFrame(gap_report)
-        gap_csv = os.path.join(report_output_folder, "timestamp_gap_report.csv")
-        gap_df.to_csv(gap_csv, index=False)
-        print("Gap report saved:", gap_csv)
-    else:
-        print("No timestamp gaps detected.")
 
-def process_standalone_relative_video(clip_info):
+def process_standalone_relative_video(clip_info, ctx: RunContext):
     """Process one untimestamped video independently with its own reports."""
-    global output_folder, annotated_video_folder, plot_folder, preview_folder
-    global rotation_data, gap_report, hour_summary, file_timestamp_report
-
-    original_paths = (
-        output_folder,
-        annotated_video_folder,
-        plot_folder,
-        preview_folder,
-    )
-    original_data = (
-        rotation_data,
-        gap_report,
-        hour_summary,
-        file_timestamp_report,
-    )
-
     source_stem = sanitize_filename(os.path.splitext(clip_info["video_file"])[0])
-    standalone_root = os.path.join(
-        original_paths[0],
-        "standalone_relative",
-        source_stem
-    )
+    child = ctx.child(os.path.join(ctx.output_folder, "standalone_relative", source_stem))
+    child.ensure_directories()
 
-    try:
-        output_folder = standalone_root
-        annotated_video_folder = os.path.join(output_folder, "annotated_videos")
-        plot_folder = os.path.join(output_folder, "plots")
-        preview_folder = os.path.join(output_folder, "previews")
+    child.file_timestamp_report.append({
+        "Video File": clip_info["video_file"],
+        "Start Timestamp": "00:00:00.000",
+        "Timestamp Source": "relative",
+        "FPS": clip_info["fps"],
+        "Frame Count": clip_info["length"],
+    })
 
-        os.makedirs(output_folder, exist_ok=True)
-        os.makedirs(annotated_video_folder, exist_ok=True)
-        os.makedirs(plot_folder, exist_ok=True)
-        os.makedirs(preview_folder, exist_ok=True)
+    print("\n" + "=" * 80)
+    print(f"STANDALONE RELATIVE-TIME VIDEO: {clip_info['video_file']}")
+    print("Relative time starts at 00:00:00 (internal anchor: 1970-01-01 00:00:00 UTC)")
+    print("=" * 80)
 
-        rotation_data = []
-        gap_report = []
-        hour_summary = []
-        file_timestamp_report = [{
-            "Video File": clip_info["video_file"],
-            "Start Timestamp": "00:00:00.000",
-            "Timestamp Source": "relative",
-            "FPS": clip_info["fps"],
-            "Frame Count": clip_info["length"],
-        }]
+    process_hour_bucket(RELATIVE_TIME_ANCHOR, [clip_info], child)
+    write_reports(child)
+    return child
 
-        print("\n" + "=" * 80)
-        print(f"STANDALONE RELATIVE-TIME VIDEO: {clip_info['video_file']}")
-        print("Relative time starts at 00:00:00 (internal anchor: 1970-01-01 00:00:00 UTC)")
-        print("=" * 80)
 
-        process_hour_bucket(RELATIVE_TIME_ANCHOR, [clip_info])
-        write_reports(output_folder)
+def run(input_dir, ctx: RunContext):
+    """Run the full workflow on ``input_dir``. Returns the main RunContext."""
+    ctx.ensure_directories()
+    buckets, relative_videos = build_hour_buckets(input_dir, ctx)
 
-    finally:
-        (
-            output_folder,
-            annotated_video_folder,
-            plot_folder,
-            preview_folder,
-        ) = original_paths
-        (
-            rotation_data,
-            gap_report,
-            hour_summary,
-            file_timestamp_report,
-        ) = original_data
+    if len(buckets) == 0 and len(relative_videos) == 0:
+        print("No valid video files found.")
+
+    # Absolute-time workflow.
+    if len(buckets) > 0:
+        for hour_key, clip_infos in sorted(buckets.items()):
+            process_hour_bucket(hour_key, clip_infos, ctx)
+
+        write_reports(ctx)
+
+    # Untimestamped videos are never combined. Each receives its own output folder
+    # and its own rotation/timestamp/hour reports using relative time from 00:00:00.
+    for clip_info in relative_videos:
+        process_standalone_relative_video(clip_info, ctx)
+
+    return ctx
 
 # ============================================================
 # MAIN
 # ============================================================
 
+def build_arg_parser():
+    parser = argparse.ArgumentParser(
+        prog="brush_rotation_activity_index.py",
+        description=(
+            "Detect mechanical cattle-brush rotation from fixed-camera video using the "
+            "activity-index pipeline used in the associated study."
+        ),
+    )
+    parser.add_argument("--input", default=input_folder,
+                        help="Directory containing input video files (default: config/CBAI_INPUT).")
+    parser.add_argument("--output", default=base_output_folder,
+                        help="Base directory for analysis outputs (default: config/CBAI_OUTPUT).")
+    configured = find_roi_preset(ROI)
+    configured_label = f"preset {configured}" if configured is not None else "a custom polygon"
+    parser.add_argument("--roi-preset", choices=list(ROI_ALL.keys()), default=None,
+                        help=("ROI preset to use for this run. Default: ROI in src/config.py "
+                              f"(currently {configured_label})."))
+    parser.add_argument("--experiment-name", default=EXPERIMENT_NAME,
+                        help=f"Name of the output subdirectory (default: {EXPERIMENT_NAME}).")
+    parser.add_argument("--require-dvr-timestamps", action="store_true", default=REQUIRE_DVR_TIMESTAMPS,
+                        help="Skip files that do not contain usable DVR timestamps.")
+    parser.add_argument("--no-annotated-video", action="store_true",
+                        help="Do not write annotated video outputs.")
+    parser.add_argument("--no-hour-plots", action="store_true",
+                        help="Do not write hourly signal plots.")
+    parser.add_argument("--show-roi-preview", action="store_true", default=SHOW_ROI_PREVIEW,
+                        help="Display ROI preview windows during processing.")
+    parser.add_argument("--no-roi-preview", action="store_true",
+                        help="Do not save ROI preview images.")
+    return parser
+
+
+def context_from_args(args):
+    if args.roi_preset is not None:
+        # Explicit CLI override: the preset's own polygon and reference size.
+        roi_polygon = np.asarray(ROI_ALL[args.roi_preset], dtype=np.int32)
+        roi_reference_size = ROI_REFERENCE_SIZES.get(args.roi_preset)
+    else:
+        # No override: whatever ROI is set in config.py (preset or custom).
+        roi_polygon = np.asarray(ROI, dtype=np.int32)
+        roi_reference_size = resolve_roi_reference_size(roi_polygon, ROI_REFERENCE_SIZE)
+    return RunContext(
+        output_folder=os.path.join(args.output, args.experiment_name),
+        roi_polygon=roi_polygon,
+        roi_reference_size=roi_reference_size,
+        write_annotated_video=WRITE_ANNOTATED_VIDEO and not args.no_annotated_video,
+        write_hour_plots=WRITE_HOUR_PLOTS and not args.no_hour_plots,
+        save_roi_preview=SAVE_ROI_PREVIEW and not args.no_roi_preview,
+        show_roi_preview=args.show_roi_preview,
+        require_dvr=args.require_dvr_timestamps,
+    )
+
+
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
+    run(args.input, context_from_args(args))
+
+
 if __name__ == "__main__":
-    buckets, relative_videos = build_hour_buckets(input_folder)
-
-    if len(buckets) == 0 and len(relative_videos) == 0:
-        print("No valid video files found.")
-
-    # Original absolute-time workflow remains unchanged.
-    if len(buckets) > 0:
-        for hour_key, clip_infos in sorted(buckets.items()):
-            process_hour_bucket(hour_key, clip_infos)
-
-        write_reports(output_folder)
-
-    # Untimestamped videos are never combined. Each receives its own output folder
-    # and its own rotation/timestamp/hour reports using relative time from 00:00:00.
-    for clip_info in relative_videos:
-        process_standalone_relative_video(clip_info)
-
+    main()

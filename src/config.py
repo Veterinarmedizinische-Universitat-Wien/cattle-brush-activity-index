@@ -33,6 +33,8 @@ ROI_ALL = {
     "60": np.array([[1210,170],[1210, 50],[1600,170],[1600,290]], dtype=np.int32),
     "rpi cam": np.array([[500,200],[500,230],[650,230],[650,200]], dtype=np.int32),
 }
+# Active ROI: a preset from ROI_ALL or a custom np.int32 polygon.
+# The --roi-preset command-line option overrides this for a single run.
 ROI = ROI_ALL["44"]
 
 # ============================================================
@@ -40,8 +42,19 @@ ROI = ROI_ALL["44"]
 # ============================================================
 
 FRAME_SKIP_ANNOTATION = 3
-PROCESSING_HEIGHT = 360  # Resize BEFORE motion extraction; None disables
+# Analysis resolution. None (default) analyses frames at the recording's native
+# resolution, as for the main evaluation results. Set e.g. 720, 480 or 360 to
+# resize frames inside the pipeline before motion extraction (in-pipeline
+# downscaling, as in the resolution benchmark); validate detection first.
+PROCESSING_HEIGHT = None
+# Frame size (width, height) in which each ROI preset was drawn. ROI polygons are
+# scaled from this size to the processed frame size.
 ROI_REFERENCE_SIZES = {"A": (1280,720), "B": (1280,720), "C": (1280,720), "D": (1280,720), "E": (1280,720), "44": (1920,1080), "60": (1920,1080), "rpi cam": (1280,720)}
+# Reference size (width, height) for the active ROI.
+# None = automatic: a preset uses its entry in ROI_REFERENCE_SIZES; a custom
+# polygon is taken to be in each video's native resolution. Set a tuple only for
+# a custom polygon drawn on a frame of a different resolution.
+ROI_REFERENCE_SIZE = None
 DOWNSCALE = 0.5
 OUTPUT_CODEC = "mp4v"
 OUTPUT_EXT = ".mp4"
@@ -84,6 +97,12 @@ THRESHOLD_SPIKE_MIN_SECONDS = 10.0
 THRESHOLD_SPIKE_HIGH_Q = 99.0
 THRESHOLD_SPIKE_ISOLATION_GAP_SECONDS = 5.0
 
+# Clip joins within an hour bucket: the previous-frame state is carried across
+# consecutive clips only when the gap between the last frame of one clip and the
+# first frame of the next is at most this many seconds. Larger gaps reset it so
+# that unrelated frames are not differenced.
+CLIP_JOIN_MAX_GAP_SECONDS = 2.0
+
 # Bout rules
 MIN_BOUT_SECONDS = 4
 MAX_BOUT_SECONDS = 2000
@@ -93,9 +112,6 @@ LEGACY_PIXEL_THRESHOLD_LOW = 0.26
 LEGACY_PIXEL_THRESHOLD_HIGH = 0.40
 LEGACY_CONTEXT_WINDOW_MINUTES = 4
 LEGACY_CONTEXT_MAX_PIXEL = 0.45
-
-SHORT_BOUT_WINDOW_SECONDS = 40
-SHORT_BOUT_SECONDS = 4
 
 # Merge nearby bouts to reduce fragmentation
 MERGE_CLOSE_BOUTS = True
@@ -117,12 +133,12 @@ PRINT_THRESHOLD_SIGNAL_STATS = True
 # ============================================================
 # PATHS
 # ============================================================
-# Edit these paths for a different machine or dataset.
+# Defaults point at the repository's examples/ folder. Override them with the
+# --input/--output command-line options or the CBAI_INPUT/CBAI_OUTPUT
+# environment variables. Output folders are created only when a run starts.
 
-input_folder = r"C:\Users\murainah\Downloads\cattle_brush_activity_index_repo\cattle_brush_activity_index_repo\examples\input"
-base_output_folder = r"C:\Users\murainah\Downloads\cattle_brush_activity_index_repo\cattle_brush_activity_index_repo\examples\output"
-output_folder = os.path.join(base_output_folder, EXPERIMENT_NAME)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-annotated_video_folder = os.path.join(output_folder, "annotated_videos")
-plot_folder = os.path.join(output_folder, "plots")
-preview_folder = os.path.join(output_folder, "previews")
+input_folder = os.environ.get("CBAI_INPUT", os.path.join(REPO_ROOT, "examples", "input"))
+base_output_folder = os.environ.get("CBAI_OUTPUT", os.path.join(REPO_ROOT, "examples", "output"))
+

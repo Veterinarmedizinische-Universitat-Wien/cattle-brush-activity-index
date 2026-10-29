@@ -1,6 +1,6 @@
 # Timebase and 360p implementation (draft)
 
-This branch introduces configurable 360p resizing before frame-based brush-motion extraction. ROI polygons are scaled from their original camera reference coordinates; new camera viewpoints require manual ROI definition and preview verification.
+This branch introduces configurable in-pipeline resizing (e.g. 360p) before frame-based brush-motion extraction; the default is native resolution (`PROCESSING_HEIGHT = None`). ROI polygons are scaled from their original camera reference coordinates; new camera viewpoints require manual ROI definition and preview verification.
 
 DVR-derived median positive timestamp intervals are now used to estimate recording FPS for per-hour frame-count-based filters and the annotated-video writer. Filename-only recordings continue to assume the container rate; that assumption is not independent FPS validation.
 
@@ -17,4 +17,4 @@ The original ROI preprocessing, frame blending, absolute-difference sum, normali
 
 ## Basic tests
 
-Run `python -m unittest discover -s tests` after installing dependencies. Tests cover ROI coordinate scaling at 1280x720 and 1920x1080; full video regression testing must be run with local sample recordings.
+Run `python -m unittest discover -s tests` after installing dependencies. Tests cover ROI scaling, normalisation references, the segment threshold, clip joins, the CLI, and an end-to-end run on synthetic videos. Regression testing against the manuscript results must still be run with local sample recordings.

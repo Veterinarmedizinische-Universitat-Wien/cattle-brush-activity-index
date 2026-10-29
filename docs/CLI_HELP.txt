@@ -1,5 +1,5 @@
-usage: brush_rotation_activity_index.py [-h] --input INPUT --output OUTPUT
-                                        [--roi-preset {44,60,A,B,C,D,E,rpi cam}]
+usage: brush_rotation_activity_index.py [-h] [--input INPUT] [--output OUTPUT]
+                                        [--roi-preset {A,B,C,D,E,44,60,rpi cam}]
                                         [--experiment-name EXPERIMENT_NAME]
                                         [--require-dvr-timestamps]
                                         [--no-annotated-video]
@@ -11,12 +11,16 @@ activity-index pipeline used in the associated study.
 
 options:
   -h, --help            show this help message and exit
-  --input INPUT         Directory containing input video files.
-  --output OUTPUT       Base directory for analysis outputs.
-  --roi-preset {44,60,A,B,C,D,E,rpi cam}
-                        ROI preset to use (default: E).
+  --input INPUT         Directory containing input video files (default:
+                        config/CBAI_INPUT).
+  --output OUTPUT       Base directory for analysis outputs (default:
+                        config/CBAI_OUTPUT).
+  --roi-preset {A,B,C,D,E,44,60,rpi cam}
+                        ROI preset to use for this run. Default: ROI in
+                        src/config.py (currently preset 44).
   --experiment-name EXPERIMENT_NAME
-                        Name of the output subdirectory.
+                        Name of the output subdirectory (default:
+                        brush_index_v6).
   --require-dvr-timestamps
                         Skip files that do not contain usable DVR timestamps.
   --no-annotated-video  Do not write annotated video outputs.

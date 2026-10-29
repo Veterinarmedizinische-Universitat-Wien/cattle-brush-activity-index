@@ -11,16 +11,24 @@ from brush_rotation_activity_index import prepare_analysis_frame
 from config import ROI_ALL, ROI_REFERENCE_SIZES
 
 class ProcessingTests(unittest.TestCase):
+    @patch("brush_rotation_activity_index.PROCESSING_HEIGHT", 360)
     def test_hungary_roi(self):
         frame = np.zeros((720,1280,3),np.uint8)
         small, polygon = prepare_analysis_frame(frame,ROI_ALL["B"],ROI_REFERENCE_SIZES["B"])
         self.assertEqual(small.shape[:2],(360,640))
         np.testing.assert_array_equal(polygon, np.rint(ROI_ALL["B"] * 0.5).astype(np.int32))
+    @patch("brush_rotation_activity_index.PROCESSING_HEIGHT", 360)
     def test_krems_roi(self):
         frame = np.zeros((1080,1920,3),np.uint8)
         small, polygon = prepare_analysis_frame(frame,ROI_ALL["60"],ROI_REFERENCE_SIZES["60"])
         self.assertEqual(small.shape[:2],(360,640))
         np.testing.assert_array_equal(polygon, np.rint(ROI_ALL["60"] / 3).astype(np.int32))
+
+    def test_native_resolution_is_default(self):
+        frame = np.zeros((1080,1920,3),np.uint8)
+        out, polygon = prepare_analysis_frame(frame,ROI_ALL["60"],ROI_REFERENCE_SIZES["60"])
+        self.assertEqual(out.shape[:2],(1080,1920))
+        np.testing.assert_array_equal(polygon, ROI_ALL["60"])
 
 if __name__ == "__main__":
     unittest.main()

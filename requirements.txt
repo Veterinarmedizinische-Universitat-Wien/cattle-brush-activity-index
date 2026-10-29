@@ -1,6 +1,8 @@
-opencv-python
-numpy
-pandas
-matplotlib
-tqdm
-openpyxl
+# Tested with Python 3.13 and numpy 2.5, pandas 3.0, OpenCV 5.0, matplotlib 3.11.
+# For a manuscript run, record the exact environment with
+# `python -m pip freeze > requirements-lock.txt` and archive it with the results.
+opencv-python>=4.8,<6
+numpy>=1.24,<3
+pandas>=2.0,<4
+matplotlib>=3.7,<4
+tqdm>=4.60,<5

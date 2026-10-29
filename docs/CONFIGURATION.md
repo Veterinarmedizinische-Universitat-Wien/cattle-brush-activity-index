@@ -7,31 +7,49 @@ are in `src/config.py`. The detection logic is in
 
 ## Paths
 
-Edit `input_folder` and `base_output_folder` in `src/config.py`. The supplied
-configuration retains the local example-folder paths used for testing.
+Pass `--input` and `--output` on the command line. Otherwise the `CBAI_INPUT`
+and `CBAI_OUTPUT` environment variables are used, then the repository's
+`examples/input` and `examples/output` folders. Results go to
+`<output>/<experiment name>/`. Nothing is created until a run starts.
 
 ## ROI
 
-Select one of the study presets through `ROI = ROI_ALL[...]`, or define and
-validate a new polygon for a new camera position. The supplied coordinates are
-camera-specific.
+Set `ROI` in `src/config.py` to a preset (`ROI = ROI_ALL["44"]`) or to your own
+`np.int32` polygon. `--roi-preset NAME` overrides it for a single run.
 
-## Timing priority
+Each preset has a reference frame size in `ROI_REFERENCE_SIZES` (the resolution
+the polygon was drawn on); the polygon is scaled from that size to the processed
+frame and to the annotated video. With `ROI_REFERENCE_SIZE = None` (default) the
+size is chosen automatically: a preset uses its entry, and a custom polygon is
+taken to be in each video's native resolution. Set `ROI_REFERENCE_SIZE` to a
+`(width, height)` tuple only if a custom polygon was drawn on a frame of a
+different resolution. Always check the saved ROI preview.
 
-The software attempts timing in this order:
+## Clip joins
 
-1. DVR metadata (`timestamp_source = dvr`)
-2. recognised filename start time (`timestamp_source = filename`)
-3. standalone relative time (`timestamp_source = relative`)
+Clips in the same hour bucket are analysed as one continuous signal. The
+previous-frame state is carried from one clip to the next only when the next clip
+starts within `CLIP_JOIN_MAX_GAP_SECONDS` (default 2 s) of the previous clip's
+last frame; larger gaps reset it. Frames without a real motion score (the first
+frame after a reset and frames that failed to process) are excluded from the
+normalisation percentiles. `hour_bucket_summary.csv` reports both counts.
 
-Filename timing accepts the patterns documented in the main README. Filename and
-DVR absolute times are not automatically timezone-converted.
+## Processing resolution
 
-When relative fallback is used, the internal anchor is
-`1970-01-01 00:00:00 UTC`, but reports and annotated video display elapsed time
-from `00:00:00`. Each relative video is analysed independently and receives its
-own output reports.
+By default (`PROCESSING_HEIGHT = None`) frames are analysed at the recording's
+native resolution, as for the main evaluation results. Setting
+`PROCESSING_HEIGHT` to 720, 480 or 360 resizes each decoded frame inside the
+pipeline before motion extraction (in-pipeline downscaling, as in the resolution
+benchmark); this increases throughput, but check detection performance on
+representative day and night footage first. Frames are never upscaled: a value
+at or above the video's height means no resizing.
 
-Set `REQUIRE_DVR_TIMESTAMPS = True` when only supported DVR metadata should be
-accepted. Set `ALLOW_STANDALONE_RELATIVE_TIME = False` to disable the relative
-fallback.
+The resize target, scaled ROI polygon and ROI masks are computed once per video
+and reused for every frame. If a video's frame size changes mid-file, the run
+prints a warning, rebuilds them for the new size and starts a new
+frame-difference run from that frame.
+
+The ROI polygon is scaled from its reference size to the analysed frame, to the
+native frame for the ROI preview, and to `DOWNSCALE` (default 0.5) for annotated
+videos. If a video's aspect ratio differs from the ROI's reference size, the run
+prints a warning because the polygon would be stretched.

@@ -35,12 +35,14 @@ python -m pip install -r requirements.txt
 3. Run on a folder of videos:
 
 ```bash
-python src/brush_rotation_activity_index.py --input path/to/videos --output path/to/results --roi-preset 44
+python src/brush_rotation_activity_index.py --input path/to/videos --output path/to/results
 ```
 
-Without `--input`/`--output`, the `CBAI_INPUT`/`CBAI_OUTPUT` environment
-variables are used, then the repository's `examples/` folders. Study parameters,
-ROI presets and output switches live in `src/config.py`; see
+Settings in `src/config.py` (ROI, paths, parameters, output switches) are the
+defaults; command-line options override them for one run. Running with no
+options uses the config as-is. Without `--input`/`--output`, the
+`CBAI_INPUT`/`CBAI_OUTPUT` environment variables are used, then the
+repository's `examples/` folders. See
 [`docs/CLI_HELP.txt`](docs/CLI_HELP.txt) for all options.
 
 4. Run the tests:

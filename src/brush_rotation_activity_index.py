@@ -55,8 +55,8 @@ from config import (
     REQUIRE_DVR_TIMESTAMPS,
     ROBUST_NORM_HIGH_PCT,
     ROBUST_NORM_LOW_PCT,
+    ROI,
     ROI_ALL,
-    ROI_KEY,
     ROI_REFERENCE_SIZE,
     SAVE_ROI_PREVIEW,
     SHORT_BOUT_SECONDS,
@@ -728,6 +728,27 @@ def filter_low_movement_within_window(
 # ============================================================
 # CONTINUOUS HOUR SIGNAL EXTRACTION
 # ============================================================
+
+def find_roi_preset(roi_polygon):
+    """Name of the ROI_ALL preset equal to ``roi_polygon``, or None for a custom polygon."""
+    polygon = np.asarray(roi_polygon)
+    for key, preset in ROI_ALL.items():
+        if preset.shape == polygon.shape and np.array_equal(preset, polygon):
+            return key
+    return None
+
+
+def resolve_roi_reference_size(roi_polygon, explicit_size=None):
+    """Reference (width, height) for ``roi_polygon``, resolved once per run.
+
+    An explicit size wins; a preset uses ROI_REFERENCE_SIZES; a custom polygon
+    returns None, meaning the video's native resolution.
+    """
+    if explicit_size is not None:
+        return tuple(explicit_size)
+    key = find_roi_preset(roi_polygon)
+    return ROI_REFERENCE_SIZES.get(key) if key is not None else None
+
 
 def scale_polygon(roi_polygon, from_size, to_size):
     """Map polygon coordinates drawn on a ``from_size`` frame to ``to_size``."""
@@ -1525,8 +1546,11 @@ def build_arg_parser():
                         help="Directory containing input video files (default: config/CBAI_INPUT).")
     parser.add_argument("--output", default=base_output_folder,
                         help="Base directory for analysis outputs (default: config/CBAI_OUTPUT).")
-    parser.add_argument("--roi-preset", choices=list(ROI_ALL.keys()), default=ROI_KEY,
-                        help=f"ROI preset to use (default: {ROI_KEY}).")
+    configured = find_roi_preset(ROI)
+    configured_label = f"preset {configured}" if configured is not None else "a custom polygon"
+    parser.add_argument("--roi-preset", choices=list(ROI_ALL.keys()), default=None,
+                        help=("ROI preset to use for this run. Default: ROI in src/config.py "
+                              f"(currently {configured_label})."))
     parser.add_argument("--experiment-name", default=EXPERIMENT_NAME,
                         help=f"Name of the output subdirectory (default: {EXPERIMENT_NAME}).")
     parser.add_argument("--require-dvr-timestamps", action="store_true", default=REQUIRE_DVR_TIMESTAMPS,
@@ -1543,13 +1567,17 @@ def build_arg_parser():
 
 
 def context_from_args(args):
-    if args.roi_preset == ROI_KEY:
-        roi_reference_size = ROI_REFERENCE_SIZE
-    else:
+    if args.roi_preset is not None:
+        # Explicit CLI override: the preset's own polygon and reference size.
+        roi_polygon = np.asarray(ROI_ALL[args.roi_preset], dtype=np.int32)
         roi_reference_size = ROI_REFERENCE_SIZES.get(args.roi_preset)
+    else:
+        # No override: whatever ROI is set in config.py (preset or custom).
+        roi_polygon = np.asarray(ROI, dtype=np.int32)
+        roi_reference_size = resolve_roi_reference_size(roi_polygon, ROI_REFERENCE_SIZE)
     return RunContext(
         output_folder=os.path.join(args.output, args.experiment_name),
-        roi_polygon=np.asarray(ROI_ALL[args.roi_preset], dtype=np.int32),
+        roi_polygon=roi_polygon,
         roi_reference_size=roi_reference_size,
         write_annotated_video=WRITE_ANNOTATED_VIDEO and not args.no_annotated_video,
         write_hour_plots=WRITE_HOUR_PLOTS and not args.no_hour_plots,

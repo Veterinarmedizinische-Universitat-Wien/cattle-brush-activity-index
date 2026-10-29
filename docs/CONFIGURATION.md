@@ -14,14 +14,16 @@ and `CBAI_OUTPUT` environment variables are used, then the repository's
 
 ## ROI
 
-Select a study preset with `--roi-preset` or `ROI_KEY` in `src/config.py`.
+Set `ROI` in `src/config.py` to a preset (`ROI = ROI_ALL["44"]`) or to your own
+`np.int32` polygon. `--roi-preset NAME` overrides it for a single run.
+
 Each preset has a reference frame size in `ROI_REFERENCE_SIZES` (the resolution
 the polygon was drawn on); the polygon is scaled from that size to the processed
-frame and to the annotated video.
-
-For a new camera position, add a polygon to `ROI_ALL` and its drawing resolution
-to `ROI_REFERENCE_SIZES`. If `ROI_REFERENCE_SIZE` is `None`, the polygon is taken
-to be in each video's native resolution. Always check the saved ROI preview.
+frame and to the annotated video. With `ROI_REFERENCE_SIZE = None` (default) the
+size is chosen automatically: a preset uses its entry, and a custom polygon is
+taken to be in each video's native resolution. Set `ROI_REFERENCE_SIZE` to a
+`(width, height)` tuple only if a custom polygon was drawn on a frame of a
+different resolution. Always check the saved ROI preview.
 
 ## Clip joins
 

@@ -16,7 +16,8 @@ options:
   --output OUTPUT       Base directory for analysis outputs (default:
                         config/CBAI_OUTPUT).
   --roi-preset {A,B,C,D,E,44,60,rpi cam}
-                        ROI preset to use (default: 44).
+                        ROI preset to use for this run. Default: ROI in
+                        src/config.py (currently preset 44).
   --experiment-name EXPERIMENT_NAME
                         Name of the output subdirectory (default:
                         brush_index_v6).

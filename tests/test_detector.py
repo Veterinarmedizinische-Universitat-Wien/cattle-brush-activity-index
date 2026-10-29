@@ -57,6 +57,32 @@ class RoiTests(unittest.TestCase):
         np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["B"])
         self.assertEqual(ctx.output_folder, os.path.join("/tmp/x", config.EXPERIMENT_NAME))
 
+    def test_configured_custom_roi_used_without_cli_override(self):
+        custom = np.array([[10, 20], [10, 80], [90, 80], [90, 20]], np.int32)
+        with patch.object(bri, "ROI", custom), patch.object(bri, "ROI_REFERENCE_SIZE", None):
+            ctx = bri.context_from_args(bri.build_arg_parser().parse_args([]))
+        np.testing.assert_array_equal(ctx.roi_polygon, custom)
+        self.assertIsNone(ctx.roi_reference_size)  # native video resolution
+
+    def test_configured_preset_roi_gets_its_reference_size(self):
+        with patch.object(bri, "ROI", config.ROI_ALL["B"]), patch.object(bri, "ROI_REFERENCE_SIZE", None):
+            ctx = bri.context_from_args(bri.build_arg_parser().parse_args([]))
+        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["B"])
+        self.assertEqual(ctx.roi_reference_size, (1280, 720))
+
+    def test_explicit_reference_size_for_custom_roi(self):
+        custom = np.array([[10, 20], [10, 80], [90, 80], [90, 20]], np.int32)
+        with patch.object(bri, "ROI", custom), patch.object(bri, "ROI_REFERENCE_SIZE", (1280, 720)):
+            ctx = bri.context_from_args(bri.build_arg_parser().parse_args([]))
+        self.assertEqual(ctx.roi_reference_size, (1280, 720))
+
+    def test_cli_preset_overrides_configured_roi(self):
+        custom = np.array([[10, 20], [10, 80], [90, 80], [90, 20]], np.int32)
+        with patch.object(bri, "ROI", custom):
+            ctx = bri.context_from_args(bri.build_arg_parser().parse_args(["--roi-preset", "60"]))
+        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["60"])
+        self.assertEqual(ctx.roi_reference_size, (1920, 1080))
+
 
 class NormalisationTests(unittest.TestCase):
     def test_placeholder_frames_excluded_from_references(self):

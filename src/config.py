@@ -33,8 +33,9 @@ ROI_ALL = {
     "60": np.array([[1210,170],[1210, 50],[1600,170],[1600,290]], dtype=np.int32),
     "rpi cam": np.array([[500,200],[500,230],[650,230],[650,200]], dtype=np.int32),
 }
-ROI_KEY = "44"
-ROI = ROI_ALL[ROI_KEY]
+# Active ROI: a preset from ROI_ALL or a custom np.int32 polygon.
+# The --roi-preset command-line option overrides this for a single run.
+ROI = ROI_ALL["44"]
 
 # ============================================================
 # SETTINGS
@@ -45,10 +46,11 @@ PROCESSING_HEIGHT = 360  # Resize BEFORE motion extraction; None disables
 # Frame size (width, height) in which each ROI preset was drawn. ROI polygons are
 # scaled from this size to the processed frame size.
 ROI_REFERENCE_SIZES = {"A": (1280,720), "B": (1280,720), "C": (1280,720), "D": (1280,720), "E": (1280,720), "44": (1920,1080), "60": (1920,1080), "rpi cam": (1280,720)}
-# Reference size for the active ROI. For a custom polygon that is not a preset,
-# set this to the (width, height) of the frame the polygon was drawn on; None
-# means "the polygon was drawn on the video's native resolution".
-ROI_REFERENCE_SIZE = ROI_REFERENCE_SIZES.get(ROI_KEY)
+# Reference size (width, height) for the active ROI.
+# None = automatic: a preset uses its entry in ROI_REFERENCE_SIZES; a custom
+# polygon is taken to be in each video's native resolution. Set a tuple only for
+# a custom polygon drawn on a frame of a different resolution.
+ROI_REFERENCE_SIZE = None
 DOWNSCALE = 0.5
 OUTPUT_CODEC = "mp4v"
 OUTPUT_EXT = ".mp4"

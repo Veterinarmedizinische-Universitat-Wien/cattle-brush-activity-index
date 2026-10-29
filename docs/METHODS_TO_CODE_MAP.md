@@ -14,6 +14,8 @@ thresholds and post-processing logic remain in `src/brush_rotation_activity_inde
 | Hour-level grouping / standalone separation | `build_hour_buckets` | `src/brush_rotation_activity_index.py` |
 | Timestamp QC | `diagnose_timestamps`, `detect_timestamp_gaps` | `src/brush_rotation_activity_index.py` |
 | Low-light enhancement | `enhance_low_light` | `src/brush_rotation_activity_index.py` |
+| ROI scaling to processed frame | `scale_polygon`, `prepare_analysis_frame` | `src/brush_rotation_activity_index.py` |
+| Clip-join contiguity check | `clips_are_contiguous` | `src/brush_rotation_activity_index.py` |
 | ROI masking / intensity preprocessing | `get_roi_from_polygon_legacy`, `preprocess_frame_for_white_legacy` | `src/brush_rotation_activity_index.py` |
 | Previous-frame blending | `blend_with_previous` | `src/brush_rotation_activity_index.py` |
 | Raw frame-difference motion score | `compute_motion_score_sum_abs_diff` | `src/brush_rotation_activity_index.py` |
@@ -25,11 +27,12 @@ thresholds and post-processing logic remain in `src/brush_rotation_activity_inde
 | Merge short gaps | `merge_close_periods` | `src/brush_rotation_activity_index.py` |
 | Low-amplitude bout filter | `filter_low_movement_bouts` | `src/brush_rotation_activity_index.py` |
 | Contextual neighbouring-bout filter | `filter_contextual_false_positives_with_edges` | `src/brush_rotation_activity_index.py` |
-| Clustered short-bout filter | `evaluate_window`, `is_within_threshold` | `src/brush_rotation_activity_index.py` |
+| Clustered short-bout filter (no effect with study defaults, see CONFIGURATION.md) | `evaluate_window`, `is_within_threshold` | `src/brush_rotation_activity_index.py` |
 | Surrounding-window movement filter | `filter_low_movement_within_window` | `src/brush_rotation_activity_index.py` |
 | Final detector orchestration | `detect_rotation_periods_for_hour_legacy` | `src/brush_rotation_activity_index.py` |
 | Continuous hourly signal extraction | `build_continuous_hour_signal` | `src/brush_rotation_activity_index.py` |
-| Absolute/relative output orchestration | `process_hour_bucket`, `process_standalone_relative_video`, `write_reports` | `src/brush_rotation_activity_index.py` |
+| Absolute/relative output orchestration | `run`, `process_hour_bucket`, `process_standalone_relative_video`, `write_reports` | `src/brush_rotation_activity_index.py` |
+| Command-line interface | `build_arg_parser`, `context_from_args`, `main` | `src/brush_rotation_activity_index.py` |
 
 ## Implementation details to match in the manuscript
 
@@ -41,6 +44,13 @@ L channel, apply an inverse binary threshold at 220, convert the processed frame
 to grayscale, apply the ROI mask again, and blend the current processed ROI with
 the previous ROI using alpha = 0.6. The motion score is the sum of absolute pixel
 differences between the current blended ROI and the preceding ROI.
+
+### Normalisation references
+
+The 5th/95th percentile references are computed over frames with a real motion
+score only. The first frame of a continuous run (no previous frame to compare)
+and frames that failed to process are placeholders: they are kept in the signal
+(normalised to 0) but excluded from the percentiles.
 
 ### Threshold estimation versus final detection
 

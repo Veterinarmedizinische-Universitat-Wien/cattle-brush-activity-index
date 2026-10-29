@@ -17,4 +17,4 @@ The original ROI preprocessing, frame blending, absolute-difference sum, normali
 
 ## Basic tests
 
-Run `python -m unittest discover -s tests` after installing dependencies. Tests cover ROI coordinate scaling at 1280x720 and 1920x1080; full video regression testing must be run with local sample recordings.
+Run `python -m unittest discover -s tests` after installing dependencies. Tests cover ROI scaling, normalisation references, the segment threshold, the short-bout rule, clip joins, the CLI, and an end-to-end run on synthetic videos. Regression testing against the manuscript results must still be run with local sample recordings.

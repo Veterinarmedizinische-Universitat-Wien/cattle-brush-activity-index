@@ -33,7 +33,8 @@ ROI_ALL = {
     "60": np.array([[1210,170],[1210, 50],[1600,170],[1600,290]], dtype=np.int32),
     "rpi cam": np.array([[500,200],[500,230],[650,230],[650,200]], dtype=np.int32),
 }
-ROI = ROI_ALL["44"]
+ROI_KEY = "44"
+ROI = ROI_ALL[ROI_KEY]
 
 # ============================================================
 # SETTINGS
@@ -41,7 +42,13 @@ ROI = ROI_ALL["44"]
 
 FRAME_SKIP_ANNOTATION = 3
 PROCESSING_HEIGHT = 360  # Resize BEFORE motion extraction; None disables
+# Frame size (width, height) in which each ROI preset was drawn. ROI polygons are
+# scaled from this size to the processed frame size.
 ROI_REFERENCE_SIZES = {"A": (1280,720), "B": (1280,720), "C": (1280,720), "D": (1280,720), "E": (1280,720), "44": (1920,1080), "60": (1920,1080), "rpi cam": (1280,720)}
+# Reference size for the active ROI. For a custom polygon that is not a preset,
+# set this to the (width, height) of the frame the polygon was drawn on; None
+# means "the polygon was drawn on the video's native resolution".
+ROI_REFERENCE_SIZE = ROI_REFERENCE_SIZES.get(ROI_KEY)
 DOWNSCALE = 0.5
 OUTPUT_CODEC = "mp4v"
 OUTPUT_EXT = ".mp4"
@@ -84,6 +91,12 @@ THRESHOLD_SPIKE_MIN_SECONDS = 10.0
 THRESHOLD_SPIKE_HIGH_Q = 99.0
 THRESHOLD_SPIKE_ISOLATION_GAP_SECONDS = 5.0
 
+# Clip joins within an hour bucket: the previous-frame state is carried across
+# consecutive clips only when the gap between the last frame of one clip and the
+# first frame of the next is at most this many seconds. Larger gaps reset it so
+# that unrelated frames are not differenced.
+CLIP_JOIN_MAX_GAP_SECONDS = 2.0
+
 # Bout rules
 MIN_BOUT_SECONDS = 4
 MAX_BOUT_SECONDS = 2000
@@ -94,6 +107,11 @@ LEGACY_PIXEL_THRESHOLD_HIGH = 0.40
 LEGACY_CONTEXT_WINDOW_MINUTES = 4
 LEGACY_CONTEXT_MAX_PIXEL = 0.45
 
+# Clustered short-bout rule (evaluate_window). It removes bouts when every bout
+# starting within SHORT_BOUT_WINDOW_SECONDS is shorter than SHORT_BOUT_SECONDS.
+# Detection already requires bouts to be longer than MIN_BOUT_SECONDS, so this
+# rule can only remove anything when SHORT_BOUT_SECONDS > MIN_BOUT_SECONDS.
+# With the study defaults (4 and 4) it removes nothing; validate_config() warns.
 SHORT_BOUT_WINDOW_SECONDS = 40
 SHORT_BOUT_SECONDS = 4
 
@@ -117,12 +135,22 @@ PRINT_THRESHOLD_SIGNAL_STATS = True
 # ============================================================
 # PATHS
 # ============================================================
-# Edit these paths for a different machine or dataset.
+# Defaults point at the repository's examples/ folder. Override them with the
+# --input/--output command-line options or the CBAI_INPUT/CBAI_OUTPUT
+# environment variables. Output folders are created only when a run starts.
 
-input_folder = r"C:\Users\murainah\Downloads\cattle_brush_activity_index_repo\cattle_brush_activity_index_repo\examples\input"
-base_output_folder = r"C:\Users\murainah\Downloads\cattle_brush_activity_index_repo\cattle_brush_activity_index_repo\examples\output"
-output_folder = os.path.join(base_output_folder, EXPERIMENT_NAME)
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-annotated_video_folder = os.path.join(output_folder, "annotated_videos")
-plot_folder = os.path.join(output_folder, "plots")
-preview_folder = os.path.join(output_folder, "previews")
+input_folder = os.environ.get("CBAI_INPUT", os.path.join(REPO_ROOT, "examples", "input"))
+base_output_folder = os.environ.get("CBAI_OUTPUT", os.path.join(REPO_ROOT, "examples", "output"))
+
+
+def validate_config():
+    """Return warnings for parameter combinations that silently disable a rule."""
+    warnings = []
+    if SHORT_BOUT_SECONDS <= MIN_BOUT_SECONDS:
+        warnings.append(
+            f"SHORT_BOUT_SECONDS ({SHORT_BOUT_SECONDS}) <= MIN_BOUT_SECONDS ({MIN_BOUT_SECONDS}): "
+            "the clustered short-bout rule (evaluate_window) cannot remove any bout."
+        )
+    return warnings

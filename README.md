@@ -32,17 +32,24 @@ python -m pip install -r requirements.txt
 
 2. Install FFmpeg separately and confirm that `ffmpeg` and `ffprobe` are available on the command line if DVR metadata extraction is required.
 
-3. Edit `src/config.py`:
-   - `input_folder`
-   - `base_output_folder`
-   - `ROI` / ROI preset
-   - optional output switches
-
-4. Run:
+3. Run on a folder of videos:
 
 ```bash
-python src/brush_rotation_activity_index.py
+python src/brush_rotation_activity_index.py --input path/to/videos --output path/to/results --roi-preset 44
 ```
+
+Without `--input`/`--output`, the `CBAI_INPUT`/`CBAI_OUTPUT` environment
+variables are used, then the repository's `examples/` folders. Study parameters,
+ROI presets and output switches live in `src/config.py`; see
+[`docs/CLI_HELP.txt`](docs/CLI_HELP.txt) for all options.
+
+4. Run the tests:
+
+```bash
+python -m unittest discover -s tests
+```
+
+`tests/test_end_to_end.py` generates small synthetic videos, so no recordings are needed.
 
 See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the timing modes and filename formats.
 
@@ -93,6 +100,7 @@ The original hourly workflow can generate:
 - `rotation_summary.xlsx` — detected rotation intervals, source file(s), timestamp source, and duration
 - `hour_bucket_summary.xlsx` — hourly signal/threshold summary
 - `file_timestamp_report.xlsx` — timestamp source and basic video metadata
+- `clip_timing_diagnostics.xlsx` — per-clip estimated FPS, interval spread, dropped/duplicate-frame gaps and placeholder frames
 - `timestamp_gap_report.csv` — timing anomalies when detected
 - `plots/` — hourly normalized motion/threshold plots
 - `previews/` — ROI preview images
@@ -106,4 +114,4 @@ Every untimestamped video receives a separate directory under:
 standalone_relative/<source_video_name>/
 ```
 
-with its own `rotation_summary.xlsx`, `hour_bucket_summary.xlsx`, `file_timestamp_report.xlsx`, plot, ROI preview, and optional annotated video. Relative bout times are written as elapsed `HH:MM:SS.sss` values.
+with its own `rotation_summary.xlsx`, `hour_bucket_summary.xlsx`, `file_timestamp_report.xlsx`, `clip_timing_diagnostics.xlsx`, plot, ROI preview, and optional annotated video. Relative bout times are written as elapsed `HH:MM:SS.sss` values.

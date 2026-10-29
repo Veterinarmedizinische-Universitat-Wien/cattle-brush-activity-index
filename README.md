@@ -99,11 +99,13 @@ If `REQUIRE_DVR_TIMESTAMPS = True`, non-DVR timing sources are rejected.
 
 The original hourly workflow can generate:
 
-- `rotation_summary.xlsx` — detected rotation intervals, source file(s), timestamp source, and duration
-- `hour_bucket_summary.xlsx` — hourly signal/threshold summary
-- `file_timestamp_report.xlsx` — timestamp source and basic video metadata
-- `clip_timing_diagnostics.xlsx` — per-clip estimated FPS, interval spread, dropped/duplicate-frame gaps and placeholder frames
-- `timestamp_gap_report.csv` — timing anomalies when detected
+All reports are UTF-8 CSV files and are always written (header-only when empty):
+
+- `rotation_summary.csv` — detected rotation intervals, source file(s), timestamp source, and duration
+- `hour_bucket_summary.csv` — hourly signal/threshold summary
+- `file_timestamp_report.csv` — timestamp source and basic video metadata
+- `clip_timing_diagnostics.csv` — per-clip estimated FPS, interval spread, dropped/duplicate-frame gaps and placeholder frames
+- `timestamp_gap_report.csv` — timing anomalies (header only when none)
 - `plots/` — hourly normalized motion/threshold plots
 - `previews/` — ROI preview images
 - `annotated_videos/` — optional annotated videos
@@ -116,4 +118,4 @@ Every untimestamped video receives a separate directory under:
 standalone_relative/<source_video_name>/
 ```
 
-with its own `rotation_summary.xlsx`, `hour_bucket_summary.xlsx`, `file_timestamp_report.xlsx`, `clip_timing_diagnostics.xlsx`, plot, ROI preview, and optional annotated video. Relative bout times are written as elapsed `HH:MM:SS.sss` values.
+with the same five CSV reports, plot, ROI preview, and optional annotated video. Relative bout times are written as elapsed `HH:MM:SS.sss` values.

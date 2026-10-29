@@ -829,6 +829,14 @@ def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
         detect_timestamp_gaps(video_file, timestamps, ctx.gap_report)
 
         roi_reference_size = ctx.roi_reference_size or (frame_width, frame_height)
+        ref_aspect = roi_reference_size[0] / roi_reference_size[1]
+        clip_aspect = frame_width / frame_height
+        if abs(ref_aspect - clip_aspect) / ref_aspect > 0.01:
+            print(
+                f"WARNING: {video_file} is {frame_width}x{frame_height} but the ROI was drawn on "
+                f"{roi_reference_size[0]}x{roi_reference_size[1]} (different aspect ratio); "
+                "the ROI will be stretched. Check the ROI preview or define a polygon for this camera."
+            )
         roi_polygon_native = scale_polygon(roi_polygon, roi_reference_size, (frame_width, frame_height))
 
         if ctx.save_roi_preview or ctx.show_roi_preview:
@@ -1446,39 +1454,35 @@ def process_hour_bucket(hour_key, clip_infos, ctx: RunContext):
 # REPORT WRITING
 # ============================================================
 
-def write_reports(ctx: RunContext):
-    os.makedirs(ctx.output_folder, exist_ok=True)
-
-    df = pd.DataFrame(ctx.rotation_data, columns=[
+REPORT_COLUMNS = {
+    "rotation_summary.csv": [
         "Hour Bucket", "Start File", "End File", "Timestamp Source",
         "Bout Start", "Bout End", "Duration (seconds, frame-based)",
-    ])
-    excel_path = os.path.join(ctx.output_folder, "rotation_summary.xlsx")
-    df.to_excel(excel_path, index=False)
-    print("Summary saved:", excel_path)
+    ],
+    "timestamp_gap_report.csv": [
+        "Video File", "Frame Index", "Timestamp Before", "Timestamp After",
+        "Delta Seconds", "Expected Interval", "Gap Type",
+    ],
+}
 
-    hour_df = pd.DataFrame(ctx.hour_summary)
-    hour_excel_path = os.path.join(ctx.output_folder, "hour_bucket_summary.xlsx")
-    hour_df.to_excel(hour_excel_path, index=False)
-    print("Hour summary saved:", hour_excel_path)
 
-    ts_df = pd.DataFrame(ctx.file_timestamp_report)
-    ts_excel_path = os.path.join(ctx.output_folder, "file_timestamp_report.xlsx")
-    ts_df.to_excel(ts_excel_path, index=False)
-    print("File timestamp report saved:", ts_excel_path)
+def write_reports(ctx: RunContext):
+    """Write every report as UTF-8 CSV. All files are always written (possibly
+    header-only) so each run produces the same set of outputs."""
+    os.makedirs(ctx.output_folder, exist_ok=True)
 
-    diag_df = pd.DataFrame(ctx.clip_diagnostics)
-    diag_path = os.path.join(ctx.output_folder, "clip_timing_diagnostics.xlsx")
-    diag_df.to_excel(diag_path, index=False)
-    print("Clip timing diagnostics saved:", diag_path)
-
-    if len(ctx.gap_report) > 0:
-        gap_df = pd.DataFrame(ctx.gap_report)
-        gap_csv = os.path.join(ctx.output_folder, "timestamp_gap_report.csv")
-        gap_df.to_csv(gap_csv, index=False)
-        print("Gap report saved:", gap_csv)
-    else:
-        print("No timestamp gaps detected.")
+    reports = [
+        ("rotation_summary.csv", ctx.rotation_data),
+        ("hour_bucket_summary.csv", ctx.hour_summary),
+        ("file_timestamp_report.csv", ctx.file_timestamp_report),
+        ("clip_timing_diagnostics.csv", ctx.clip_diagnostics),
+        ("timestamp_gap_report.csv", ctx.gap_report),
+    ]
+    for name, rows in reports:
+        df = pd.DataFrame(rows, columns=REPORT_COLUMNS.get(name))
+        path = os.path.join(ctx.output_folder, name)
+        df.to_csv(path, index=False, encoding="utf-8")
+        print(f"Saved {name} ({len(df)} rows):", path)
 
 
 def process_standalone_relative_video(clip_info, ctx: RunContext):

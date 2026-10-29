@@ -71,18 +71,20 @@ class EndToEndTests(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def test_reports_written(self):
-        for name in ("rotation_summary.xlsx", "hour_bucket_summary.xlsx",
-                     "file_timestamp_report.xlsx", "clip_timing_diagnostics.xlsx"):
+        for name in ("rotation_summary.csv", "hour_bucket_summary.csv",
+                     "file_timestamp_report.csv", "clip_timing_diagnostics.csv",
+                     "timestamp_gap_report.csv"):
             self.assertTrue(os.path.exists(os.path.join(self.out, name)), name)
         self.assertTrue(os.listdir(os.path.join(self.out, "annotated_videos")))
+        self.assertFalse([f for f in os.listdir(self.out) if f.endswith(".xlsx")])
 
     def test_gap_resets_clip_join(self):
-        hour = pd.read_excel(os.path.join(self.out, "hour_bucket_summary.xlsx"))
+        hour = pd.read_csv(os.path.join(self.out, "hour_bucket_summary.csv"))
         self.assertEqual(int(hour.loc[0, "Clip Join Resets"]), 1)
         self.assertEqual(int(hour.loc[0, "Placeholder Frames (excluded from normalization refs)"]), 2)
 
     def test_detected_bouts_match_active_intervals(self):
-        rot = pd.read_excel(os.path.join(self.out, "rotation_summary.xlsx"))
+        rot = pd.read_csv(os.path.join(self.out, "rotation_summary.csv"))
         starts = pd.to_datetime(rot["Bout Start"], format="%d.%m.%Y %H:%M:%S.%f")
         ends = pd.to_datetime(rot["Bout End"], format="%d.%m.%Y %H:%M:%S.%f")
         base = pd.Timestamp("2024-04-25 12:00:00")
@@ -94,8 +96,8 @@ class EndToEndTests(unittest.TestCase):
             self.assertAlmostEqual(ge, ee, delta=1.5)
 
     def test_standalone_relative_video(self):
-        rel = os.path.join(self.out, "standalone_relative", "no_time", "rotation_summary.xlsx")
-        rot = pd.read_excel(rel)
+        rel = os.path.join(self.out, "standalone_relative", "no_time", "rotation_summary.csv")
+        rot = pd.read_csv(rel)
         self.assertEqual(len(rot), 1)
         self.assertTrue(str(rot.loc[0, "Bout Start"]).startswith("00:01:"))
 

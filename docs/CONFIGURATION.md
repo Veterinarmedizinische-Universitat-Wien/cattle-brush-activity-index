@@ -32,7 +32,7 @@ previous-frame state is carried from one clip to the next only when the next cli
 starts within `CLIP_JOIN_MAX_GAP_SECONDS` (default 2 s) of the previous clip's
 last frame; larger gaps reset it. Frames without a real motion score (the first
 frame after a reset and frames that failed to process) are excluded from the
-normalisation percentiles. `hour_bucket_summary.xlsx` reports both counts.
+normalisation percentiles. `hour_bucket_summary.csv` reports both counts.
 
 ## Clustered short-bout rule
 
@@ -61,3 +61,14 @@ own output reports.
 Set `REQUIRE_DVR_TIMESTAMPS = True` (or pass `--require-dvr-timestamps`) when only supported DVR metadata should be
 accepted. Set `ALLOW_STANDALONE_RELATIVE_TIME = False` to disable the relative
 fallback.
+
+## Processing resolution
+
+Every frame is resized to `PROCESSING_HEIGHT` (default 360 px; 640×360 for
+16:9 video) before motion extraction, so the ROI covers the same number of
+pixels whatever the recording resolution. The ROI polygon is scaled from its
+reference size to the processed frame, to the native frame for the ROI preview,
+and to `DOWNSCALE` (default 0.5) for annotated videos. If a video's aspect
+ratio differs from the ROI's reference size, the run prints a warning because
+the polygon would be stretched. Set `PROCESSING_HEIGHT = None` to analyse at
+native resolution.

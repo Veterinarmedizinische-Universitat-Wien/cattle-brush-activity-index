@@ -31,17 +31,17 @@ rate is assumed. Check it before analysis, for example by comparing the frame
 count divided by the container rate with the start and end times in the file
 names of consecutive clips.
 
-## Re-encoded videos
+## Analysing at a lower resolution
 
-Resizing, trimming or converting a DVR recording with a video tool usually
-removes the DVR timestamp stream. The copy then falls back to the file name and
-the container frame rate. Analyse the original file instead and, for a lower
-analysis resolution, use `--processing-height` (in-pipeline resizing), which
-keeps the original timestamps.
+To analyse a high-resolution recording at a lower resolution (for example 1080p
+or 720p video at 480p or 360p), use `--processing-height` (or
+`PROCESSING_HEIGHT` in `src/config.py`). Frames are resized inside the
+pipeline after decoding, so the original file and its DVR timestamps are used
+unchanged.
 
-If re-encoded copies must be analysed, their frame count is normally unchanged,
-so frame *i* of the copy is frame *i* of the original: detected times can be
-mapped back onto the original DVR timestamps by frame index.
+Resizing the video files beforehand with a separate video tool is not needed.
+Such tools usually drop the DVR timestamp stream, and the resized copy then
+falls back to the file name and the container frame rate.
 
 ## Hour buckets and clip joins
 

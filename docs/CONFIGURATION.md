@@ -1,4 +1,4 @@
-# Configuration and timing modes
+# Configuration
 
 All user-editable paths, ROI presets, algorithm parameters, and output switches
 are in `src/config.py`. The detection logic is in
@@ -40,9 +40,9 @@ normalisation percentiles. `hour_bucket_summary.csv` reports both counts.
 
 By default (`PROCESSING_HEIGHT = None`) frames are analysed at the recording's
 native resolution, as for the main evaluation results. Setting
-`PROCESSING_HEIGHT` (or `--processing-height`) to 720, 480 or 360 resizes each decoded frame inside the
-pipeline before motion extraction (in-pipeline downscaling, as in the resolution
-benchmark); this increases throughput, but check detection performance on
+`PROCESSING_HEIGHT` (or `--processing-height`) to 720, 480 or 360 resizes each
+decoded frame inside the pipeline before motion extraction (in-pipeline
+downscaling, as in the resolution benchmark); this increases throughput, but check detection performance on
 representative day and night footage first. Frames are never upscaled: a value
 at or above the video's height means no resizing.
 

@@ -29,12 +29,6 @@ python src/brush_rotation_activity_index.py --input path/to/videos --output path
   them for one run. See [`docs/CLI_HELP.txt`](docs/CLI_HELP.txt) for all options.
 - Always check the saved ROI preview before a long run.
 
-Run the tests (no recordings needed; synthetic videos are generated):
-
-```bash
-python -m unittest discover -s tests
-```
-
 ## Method
 
 1. Read the video and its frame timestamps.

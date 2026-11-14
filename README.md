@@ -1,121 +1,94 @@
-# Cattle Brush Activity Index for Mechanical Rotation Detection
+# Cattle Brush Activity Index
 
-Research code for detecting **mechanical rotation of cattle grooming brushes** from fixed-camera video using a lightweight CPU-based activity index.
+Detects **mechanical rotation of cattle grooming brushes** in fixed-camera video
+with a lightweight, CPU-only frame-differencing activity index. It runs on a
+desktop or on an edge device such as a Raspberry Pi 5.
 
-The code measures brush motion. Used alone, its output therefore represents brush/resource-level rotation. Individual-level brush-use monitoring would require a separate animal-identification/contact layer.
+The output describes brush rotation, not which cow used the brush. Individual
+brush use needs an additional animal-identification or contact layer.
 
-## Repository structure
-
-```text
-src/
-  brush_rotation_activity_index.py   # detection pipeline and analysis orchestration
-  config.py                          # paths, ROI presets, parameters, output switches
-  io_utils.py                        # video/timestamp/filename/file-system utilities
-examples/
-  input/                             # local test video location; videos are git-ignored
-  output/                            # local generated output; includes report schema only
-docs/
-  CONFIGURATION.md
-  METHODS_TO_CODE_MAP.md
-  RELEASE_CHECKLIST.md
-```
-
-The detector itself remains in one main script so that the manuscript workflow can be followed from signal extraction through post-processing. Configuration and input/timestamp utilities are separated only for readability; the detection thresholds and post-processing logic are unchanged by this refactor.
-
-## Quick start
-
-1. Install the Python dependencies:
+## Installation
 
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-2. Install FFmpeg separately and confirm that `ffmpeg` and `ffprobe` are available on the command line if DVR metadata extraction is required.
+Install [FFmpeg](https://ffmpeg.org/) and make sure `ffmpeg` and `ffprobe` are
+on the command line. They are needed to read DVR timestamps.
 
-3. Run on a folder of videos:
+## Usage
 
 ```bash
-python src/brush_rotation_activity_index.py --input path/to/videos --output path/to/results
+python src/brush_rotation_activity_index.py --input path/to/videos --output path/to/results --roi-preset A1
 ```
 
-Settings in `src/config.py` (ROI, paths, parameters, output switches) are the
-defaults; command-line options override them for one run. Running with no
-options uses the config as-is. Without `--input`/`--output`, the
-`CBAI_INPUT`/`CBAI_OUTPUT` environment variables are used, then the
-repository's `examples/` folders. See
-[`docs/CLI_HELP.txt`](docs/CLI_HELP.txt) for all options.
+- `--roi-preset` selects one of the brush ROIs in `src/config.py` (`A1`–`A5`,
+  `B1`–`B5`, the ten evaluation recordings). For other cameras, set `ROI` in
+  `src/config.py` to your own polygon.
+- Settings in `src/config.py` are the defaults; command-line options override
+  them for one run. See [`docs/CLI_HELP.txt`](docs/CLI_HELP.txt) for all options.
+- Always check the saved ROI preview before a long run.
 
-4. Run the tests:
+Run the tests (no recordings needed; synthetic videos are generated):
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-`tests/test_end_to_end.py` generates small synthetic videos, so no recordings are needed.
+## Method
 
-See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the timing modes and filename formats.
+1. Read the video and its frame timestamps.
+2. Mask the brush ROI and preprocess the frame.
+3. Sum absolute frame-to-frame pixel differences within the ROI.
+4. Log-transform and normalise to the 5th–95th percentiles.
+5. Smooth with a 5-frame moving average.
+6. Suppress short isolated spikes in a copy used only for threshold estimation.
+7. Compute an adaptive threshold per 10-min segment (99.5th percentile × 0.50 or 0.62).
+8. Detect rotation intervals on the smoothed signal.
+9. Merge gaps < 2 s, remove bouts < 4 s and apply the contextual filters.
 
-## Processing sequence
+Every step and parameter is mapped to code in
+[`docs/METHODS_TO_CODE_MAP.md`](docs/METHODS_TO_CODE_MAP.md).
 
-1. Read video and obtain timing information.
-2. Apply the predefined brush ROI and image preprocessing.
-3. Calculate frame-to-frame absolute pixel differences and sum them within the ROI.
-4. Apply log transformation and 5th–95th percentile normalization.
-5. Smooth the normalized signal with a 5-frame moving average.
-6. Build a threshold-only signal by suppressing isolated short high-amplitude spikes.
-7. Divide the signal into 10-min segments and use the 99.5th percentile as the segment reference.
-8. Apply the study-specific dynamic multiplier (0.50 for reference values >= 0.90; 0.62 otherwise).
-9. Detect candidate rotation intervals on the original smoothed normalized signal.
-10. Apply temporal and contextual post-processing and export the final mechanical-rotation intervals.
+## Timing
 
-See [`docs/METHODS_TO_CODE_MAP.md`](docs/METHODS_TO_CODE_MAP.md) for the function-level mapping.
+Frame times come from, in order:
 
-## Timestamp handling
+1. **DVR timestamps** embedded in the video (frame rate measured from them);
+2. **a timestamp in the file name**, with frame times at the container frame rate;
+3. **relative time** from 00:00:00, for videos with neither (analysed separately).
 
-Timing is resolved in this order:
+With DVR timestamps, the frame rate used for the time windows is measured from
+them; otherwise the container frame rate is used. To analyse at a lower
+resolution, use `--processing-height`, which resizes inside the pipeline and
+keeps the original video and its timestamps.
 
-1. **DVR metadata** — absolute date/time reconstructed from the supported DVR metadata stream.
-2. **Recognised filename timestamp** — absolute start time parsed from the filename, with frame times generated from decoded FPS.
-3. **Relative time** — if neither source exists and `ALLOW_STANDALONE_RELATIVE_TIME = True`, that video is processed independently from `00:00:00`.
-
-Relative-time videos are never combined with each other or with the absolute-time hourly sequence. Each receives its own output folder and its own rotation/timestamp/hour reports. Internally the relative mode uses `1970-01-01 00:00:00 UTC` only as a computational anchor; user-facing output is formatted as elapsed time.
-
-Supported filename timestamp patterns include:
-
-```text
-Event20240425123045.mp4
-20240425123045.mp4
-25.04.2024-123045.mp4
-25.04.2024_123045.mp4
-2024-04-25_12-30-45.mp4
-2024_04_25_12_30_45.mp4
-```
-
-If `REQUIRE_DVR_TIMESTAMPS = True`, non-DVR timing sources are rejected.
+Details: [`docs/TIMING.md`](docs/TIMING.md).
 
 ## Outputs
 
-### Absolute-time/DVR or filename workflow
+Written to `<output>/<experiment name>/` as UTF-8 CSV:
 
-The original hourly workflow can generate:
+| File | Content |
+|---|---|
+| `rotation_summary.csv` | Detected rotation intervals: start, end, source clips, timestamp source |
+| `hour_bucket_summary.csv` | Per-hour signal and threshold summary |
+| `file_timestamp_report.csv` | Timestamp source, container and clock frame rate per video |
+| `clip_timing_diagnostics.csv` | Per-clip frame-rate estimate, dropped/duplicate frames |
+| `timestamp_gap_report.csv` | Timing anomalies |
 
-All reports are UTF-8 CSV files and are always written (header-only when empty):
+plus hourly plots (`plots/`), ROI previews (`previews/`) and optional annotated
+videos (`annotated_videos/`). Use `Bout End − Bout Start` for bout durations.
 
-- `rotation_summary.csv` — detected rotation intervals, source file(s), timestamp source, and duration
-- `hour_bucket_summary.csv` — hourly signal/threshold summary
-- `file_timestamp_report.csv` — timestamp source and basic video metadata
-- `clip_timing_diagnostics.csv` — per-clip estimated FPS, interval spread, dropped/duplicate-frame gaps and placeholder frames
-- `timestamp_gap_report.csv` — timing anomalies (header only when none)
-- `plots/` — hourly normalized motion/threshold plots
-- `previews/` — ROI preview images
-- `annotated_videos/` — optional annotated videos
-
-### Standalone relative-time workflow
-
-Every untimestamped video receives a separate directory under:
+## Repository layout
 
 ```text
-standalone_relative/<source_video_name>/
+src/        brush_rotation_activity_index.py (pipeline), config.py, io_utils.py
+tests/      unit and end-to-end tests
+docs/       CLI_HELP.txt, CONFIGURATION.md, METHODS_TO_CODE_MAP.md, TIMING.md
+examples/   local input/output folders and the output schema
 ```
 
-with the same five CSV reports, plot, ROI preview, and optional annotated video. Relative bout times are written as elapsed `HH:MM:SS.sss` values.
+## Citation and license
+
+See [`CITATION.cff`](CITATION.cff). Released under the [MIT License](LICENSE).

@@ -1,8 +1,7 @@
 # Methods-to-code map
 
-The repository separates configuration and input/timestamp utilities from the
-activity-index detector. This is a structural refactor only; the detector
-thresholds and post-processing logic remain in `src/brush_rotation_activity_index.py`.
+Where each step of the method is implemented. Parameters are in
+`src/config.py`; timing behaviour is described in [`TIMING.md`](TIMING.md).
 
 | Manuscript concept | Code implementation | File |
 |---|---|---|
@@ -16,7 +15,7 @@ thresholds and post-processing logic remain in `src/brush_rotation_activity_inde
 | Low-light enhancement | `enhance_low_light` | `src/brush_rotation_activity_index.py` |
 | ROI scaling to processed frame | `scale_polygon`, `prepare_analysis_frame` | `src/brush_rotation_activity_index.py` |
 | Clip-join contiguity check | `clips_are_contiguous` | `src/brush_rotation_activity_index.py` |
-| ROI masking / intensity preprocessing | `get_roi_from_polygon_legacy`, `preprocess_frame_for_white_legacy` | `src/brush_rotation_activity_index.py` |
+| ROI masking / intensity preprocessing | `get_roi_from_polygon`, `preprocess_frame_for_white` | `src/brush_rotation_activity_index.py` |
 | Previous-frame blending | `blend_with_previous` | `src/brush_rotation_activity_index.py` |
 | Raw frame-difference motion score | `compute_motion_score_sum_abs_diff` | `src/brush_rotation_activity_index.py` |
 | Log + percentile normalization | `robust_log_normalize` | `src/brush_rotation_activity_index.py` |
@@ -28,12 +27,12 @@ thresholds and post-processing logic remain in `src/brush_rotation_activity_inde
 | Low-amplitude bout filter | `filter_low_movement_bouts` | `src/brush_rotation_activity_index.py` |
 | Contextual neighbouring-bout filter | `filter_contextual_false_positives_with_edges` | `src/brush_rotation_activity_index.py` |
 | Surrounding-window movement filter | `filter_low_movement_within_window` | `src/brush_rotation_activity_index.py` |
-| Final detector orchestration | `detect_rotation_periods_for_hour_legacy` | `src/brush_rotation_activity_index.py` |
+| Final detector orchestration | `detect_rotation_periods_for_hour` | `src/brush_rotation_activity_index.py` |
 | Continuous hourly signal extraction | `build_continuous_hour_signal` | `src/brush_rotation_activity_index.py` |
 | Absolute/relative output orchestration | `run`, `process_hour_bucket`, `process_standalone_relative_video`, `write_reports` | `src/brush_rotation_activity_index.py` |
 | Command-line interface | `build_arg_parser`, `context_from_args`, `main` | `src/brush_rotation_activity_index.py` |
 
-## Implementation details to match in the manuscript
+## Implementation details
 
 ### Frame preprocessing
 
@@ -64,6 +63,4 @@ maximum-duration rule.
 
 ### Timing
 
-Absolute-time recordings retain the original hour-bucket workflow. A video
-without DVR or recognised filename timing can be analysed independently in
-relative time.
+See [`TIMING.md`](TIMING.md).

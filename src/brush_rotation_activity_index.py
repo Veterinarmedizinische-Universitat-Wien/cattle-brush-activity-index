@@ -35,14 +35,14 @@ from config import (
     PROCESSING_HEIGHT,
     ROI_REFERENCE_SIZES,
     FRAME_SKIP_ANNOTATION,
-    LEGACY_CONTEXT_MAX_PIXEL,
-    LEGACY_CONTEXT_WINDOW_MINUTES,
-    LEGACY_HIGH_PCT,
-    LEGACY_LOW_PCT,
-    LEGACY_PIXEL_THRESHOLD_HIGH,
-    LEGACY_PIXEL_THRESHOLD_LOW,
-    LEGACY_SEGMENT_MAX_SWITCH,
-    LEGACY_SEGMENT_MINUTES,
+    CONTEXT_MAX_PIXEL,
+    CONTEXT_WINDOW_MINUTES,
+    HIGH_MOTION_MULTIPLIER,
+    LOW_MOTION_MULTIPLIER,
+    PIXEL_THRESHOLD_HIGH,
+    PIXEL_THRESHOLD_LOW,
+    SEGMENT_HIGH_MOTION_REF,
+    SEGMENT_MINUTES,
     MAX_BOUT_SECONDS,
     MERGE_CLOSE_BOUTS,
     MERGE_GAP_SECONDS,
@@ -94,6 +94,7 @@ class RunContext:
     output_folder: str
     roi_polygon: np.ndarray
     roi_reference_size: tuple = None  # (width, height); None = native frame size
+    processing_height: int = PROCESSING_HEIGHT  # None = native resolution
     write_annotated_video: bool = WRITE_ANNOTATED_VIDEO
     write_hour_plots: bool = WRITE_HOUR_PLOTS
     save_roi_preview: bool = SAVE_ROI_PREVIEW
@@ -129,6 +130,7 @@ class RunContext:
             output_folder=output_folder,
             roi_polygon=self.roi_polygon,
             roi_reference_size=self.roi_reference_size,
+            processing_height=self.processing_height,
             write_annotated_video=self.write_annotated_video,
             write_hour_plots=self.write_hour_plots,
             save_roi_preview=self.save_roi_preview,
@@ -187,7 +189,8 @@ def build_hour_buckets(folder: str, ctx: RunContext):
             "Video File": file,
             "Start Timestamp": ts.strftime("%d.%m.%Y %H:%M:%S.%f")[:-3],
             "Timestamp Source": start_info["timestamp_source"],
-            "FPS": start_info["fps"],
+            "Container FPS": start_info["fps"],
+            "Clock FPS": start_info["actual_fps"],
             "Frame Count": start_info["length"],
         })
 
@@ -409,7 +412,7 @@ def enhance_low_light(frame):
     enhanced_lab = cv2.merge((l, a, b))
     return cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
 
-def build_legacy_roi_mask(shape, polygon):
+def build_roi_mask(shape, polygon):
     """ROI mask exactly as the original per-frame code built it.
 
     Note: on a 3-channel shape, cv2.fillPoly with the scalar 255 fills only the
@@ -420,13 +423,13 @@ def build_legacy_roi_mask(shape, polygon):
     cv2.fillPoly(mask, [polygon], 255)
     return mask
 
-def get_roi_from_polygon_legacy(frame, polygon, mask=None):
+def get_roi_from_polygon(frame, polygon, mask=None):
     if mask is None:
-        mask = build_legacy_roi_mask(frame.shape, polygon)
+        mask = build_roi_mask(frame.shape, polygon)
     return cv2.bitwise_and(frame, mask)
 
-def preprocess_frame_for_white_legacy(frame, polygon, mask=None):
-    roi = get_roi_from_polygon_legacy(frame, polygon, mask)
+def preprocess_frame_for_white(frame, polygon, mask=None):
+    roi = get_roi_from_polygon(frame, polygon, mask)
     lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     normalized_l = cv2.normalize(l, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
@@ -751,7 +754,7 @@ class AnalysisGeometry:
     frame_shape: tuple          # (height, width) of decoded frames
     target_size: tuple          # (width, height) to resize to, or None
     polygon: np.ndarray         # ROI polygon in analysis-frame coordinates
-    mask_color: np.ndarray      # legacy ROI mask for the BGR analysis frame
+    mask_color: np.ndarray      # ROI mask for the BGR analysis frame
     mask_gray: np.ndarray       # ROI mask for the grayscale analysis frame
 
     def prepare(self, frame):
@@ -771,8 +774,8 @@ def build_analysis_geometry(frame_w, frame_h, roi_polygon, roi_reference_size=No
         frame_shape=(frame_h, frame_w),
         target_size=target,
         polygon=polygon,
-        mask_color=build_legacy_roi_mask((analysis_h, analysis_w, 3), polygon),
-        mask_gray=build_legacy_roi_mask((analysis_h, analysis_w), polygon),
+        mask_color=build_roi_mask((analysis_h, analysis_w, 3), polygon),
+        mask_gray=build_roi_mask((analysis_h, analysis_w), polygon),
     )
 
 
@@ -879,7 +882,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
 
         # Resize target, scaled ROI polygon and ROI masks: once per video.
         geometry = build_analysis_geometry(
-            frame_width, frame_height, roi_polygon, roi_reference_size, PROCESSING_HEIGHT
+            frame_width, frame_height, roi_polygon, roi_reference_size, ctx.processing_height
         )
 
         while local_frame_idx < total_frames_target:
@@ -898,7 +901,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
                         "rebuilding ROI geometry."
                     )
                     geometry = build_analysis_geometry(
-                        new_w, new_h, roi_polygon, roi_reference_size, PROCESSING_HEIGHT
+                        new_w, new_h, roi_polygon, roi_reference_size, ctx.processing_height
                     )
                     # The previous ROI has the old size and cannot be blended or
                     # differenced with the new frames; start a new run.
@@ -906,11 +909,11 @@ def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
 
                 analysis_frame = geometry.prepare(frame)
                 enhanced_frame = enhance_low_light(analysis_frame)
-                preprocessed_frame = preprocess_frame_for_white_legacy(
+                preprocessed_frame = preprocess_frame_for_white(
                     enhanced_frame, geometry.polygon, geometry.mask_color
                 )
                 gray_frame = cv2.cvtColor(preprocessed_frame, cv2.COLOR_BGR2GRAY)
-                roi = get_roi_from_polygon_legacy(gray_frame, geometry.polygon, geometry.mask_gray)
+                roi = get_roi_from_polygon(gray_frame, geometry.polygon, geometry.mask_gray)
                 roi = blend_with_previous(roi, prev_roi, alpha=BLEND_ALPHA)
 
                 if prev_roi is not None and prev_roi.shape == roi.shape:
@@ -1007,7 +1010,7 @@ def build_continuous_hour_signal(hour_key, clip_infos, ctx: RunContext):
 # RUN FULL DETECTOR ON NORMALIZED HOUR SIGNAL
 # ============================================================
 
-def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters, valid_mask=None):
+def detect_rotation_periods_for_hour(combined_diffs_raw, fps_for_filters, valid_mask=None):
     """Run the full detector.
 
     Returns (periods, smoothed, threshold_curve, normalized, norm_info,
@@ -1045,10 +1048,10 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters,
     threshold_curve, threshold_reference = compute_segment_threshold_curve(
         smoothed_diffs=threshold_signal,
         fps=fps_for_filters,
-        segment_minutes=LEGACY_SEGMENT_MINUTES,
-        high_threshold=LEGACY_SEGMENT_MAX_SWITCH,
-        low_pct=LEGACY_LOW_PCT,
-        high_pct=LEGACY_HIGH_PCT,
+        segment_minutes=SEGMENT_MINUTES,
+        high_threshold=SEGMENT_HIGH_MOTION_REF,
+        low_pct=LOW_MOTION_MULTIPLIER,
+        high_pct=HIGH_MOTION_MULTIPLIER,
         ref_percentile=THRESHOLD_REF_PERCENTILE,
         return_reference=True,
     )
@@ -1072,22 +1075,22 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters,
     rotation_periods = filter_low_movement_bouts(
         rotation_periods,
         smoothed_diffs,
-        pixel_threshold=LEGACY_PIXEL_THRESHOLD_LOW
+        pixel_threshold=PIXEL_THRESHOLD_LOW
     )
 
     rotation_periods = filter_contextual_false_positives_with_edges(
         rotation_periods,
         smoothed_diffs,
-        pixel_threshold_low=LEGACY_PIXEL_THRESHOLD_LOW,
-        pixel_threshold_high=LEGACY_PIXEL_THRESHOLD_HIGH
+        pixel_threshold_low=PIXEL_THRESHOLD_LOW,
+        pixel_threshold_high=PIXEL_THRESHOLD_HIGH
     )
 
     rotation_periods = filter_low_movement_within_window(
         rotation_periods,
         smoothed_diffs,
         fps_for_filters,
-        window_minutes=LEGACY_CONTEXT_WINDOW_MINUTES,
-        max_pixel_threshold=LEGACY_CONTEXT_MAX_PIXEL
+        window_minutes=CONTEXT_WINDOW_MINUTES,
+        max_pixel_threshold=CONTEXT_MAX_PIXEL
     )
 
     filtered_by_duration = []
@@ -1103,7 +1106,7 @@ def detect_rotation_periods_for_hour_legacy(combined_diffs_raw, fps_for_filters,
 # PLOT
 # ============================================================
 
-def save_hour_plot_legacy(
+def save_hour_plot(
     hour_key,
     combined_timestamps,
     smoothed_diffs,
@@ -1221,7 +1224,7 @@ def threshold_percentage_at(threshold_curve, reference_curve, idx):
         return 0
     return int(round(100.0 * float(threshold_curve[idx]) / seg_ref))
 
-def write_annotated_video_for_clip_legacy(
+def write_annotated_video_for_clip(
     vr,
     out_path,
     hour_smoothed_diffs,
@@ -1352,7 +1355,7 @@ def process_hour_bucket(hour_key, clip_infos, ctx: RunContext):
         print_signal_stats("RAW hour signal", hour_agg["combined_diffs_raw"])
 
     (hour_rotation_periods, smoothed_diffs, threshold_curve, normalized_diffs,
-     norm_info, threshold_signal, threshold_reference) = detect_rotation_periods_for_hour_legacy(
+     norm_info, threshold_signal, threshold_reference) = detect_rotation_periods_for_hour(
         hour_agg["combined_diffs_raw"], fps_for_filters, valid_mask=hour_agg["combined_valid"]
     )
 
@@ -1436,7 +1439,7 @@ def process_hour_bucket(hour_key, clip_infos, ctx: RunContext):
                 f"{hour_key.strftime('%Y%m%d_%H00')}_movement.png"
             )
 
-        save_hour_plot_legacy(
+        save_hour_plot(
             hour_key,
             hour_agg["combined_timestamps"],
             smoothed_diffs,
@@ -1457,10 +1460,10 @@ def process_hour_bucket(hour_key, clip_infos, ctx: RunContext):
 
     if ctx.write_annotated_video:
         for vr in hour_agg["clip_results"]:
-            out_name = os.path.splitext(vr["video_file"])[0] + "_legacy_annotated" + OUTPUT_EXT
+            out_name = os.path.splitext(vr["video_file"])[0] + "_annotated" + OUTPUT_EXT
             out_path = os.path.join(ctx.annotated_video_folder, sanitize_filename(out_name))
 
-            write_annotated_video_for_clip_legacy(
+            write_annotated_video_for_clip(
                 vr=vr,
                 out_path=out_path,
                 hour_smoothed_diffs=smoothed_diffs,
@@ -1515,7 +1518,8 @@ def process_standalone_relative_video(clip_info, ctx: RunContext):
         "Video File": clip_info["video_file"],
         "Start Timestamp": "00:00:00.000",
         "Timestamp Source": "relative",
-        "FPS": clip_info["fps"],
+        "Container FPS": clip_info["fps"],
+        "Clock FPS": clip_info["actual_fps"],
         "Frame Count": clip_info["length"],
     })
 
@@ -1572,6 +1576,10 @@ def build_arg_parser():
     parser.add_argument("--roi-preset", choices=list(ROI_ALL.keys()), default=None,
                         help=("ROI preset to use for this run. Default: ROI in src/config.py "
                               f"(currently {configured_label})."))
+    parser.add_argument("--processing-height", type=int, default=PROCESSING_HEIGHT,
+                        help=("Resize frames to this height (e.g. 720, 480, 360) inside the "
+                              "pipeline before motion extraction; the original video is not "
+                              "changed. Default: native resolution."))
     parser.add_argument("--experiment-name", default=EXPERIMENT_NAME,
                         help=f"Name of the output subdirectory (default: {EXPERIMENT_NAME}).")
     parser.add_argument("--require-dvr-timestamps", action="store_true", default=REQUIRE_DVR_TIMESTAMPS,
@@ -1600,6 +1608,7 @@ def context_from_args(args):
         output_folder=os.path.join(args.output, args.experiment_name),
         roi_polygon=roi_polygon,
         roi_reference_size=roi_reference_size,
+        processing_height=args.processing_height,
         write_annotated_video=WRITE_ANNOTATED_VIDEO and not args.no_annotated_video,
         write_hour_plots=WRITE_HOUR_PLOTS and not args.no_hour_plots,
         save_roi_preview=SAVE_ROI_PREVIEW and not args.no_roi_preview,

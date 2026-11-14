@@ -14,7 +14,9 @@ and `CBAI_OUTPUT` environment variables are used, then the repository's
 
 ## ROI
 
-Set `ROI` in `src/config.py` to a preset (`ROI = ROI_ALL["44"]`) or to your own
+`ROI_ALL` holds the brush ROIs of the ten evaluation recordings (`A1`–`A5` for
+Farm A, `B1`–`B5` for Farm B), exactly as used for the published results. Set
+`ROI` in `src/config.py` to one of them (`ROI = ROI_ALL["B1"]`) or to your own
 `np.int32` polygon. `--roi-preset NAME` overrides it for a single run.
 
 Each preset has a reference frame size in `ROI_REFERENCE_SIZES` (the resolution
@@ -38,7 +40,7 @@ normalisation percentiles. `hour_bucket_summary.csv` reports both counts.
 
 By default (`PROCESSING_HEIGHT = None`) frames are analysed at the recording's
 native resolution, as for the main evaluation results. Setting
-`PROCESSING_HEIGHT` to 720, 480 or 360 resizes each decoded frame inside the
+`PROCESSING_HEIGHT` (or `--processing-height`) to 720, 480 or 360 resizes each decoded frame inside the
 pipeline before motion extraction (in-pipeline downscaling, as in the resolution
 benchmark); this increases throughput, but check detection performance on
 representative day and night footage first. Frames are never upscaled: a value

@@ -1,5 +1,6 @@
 usage: brush_rotation_activity_index.py [-h] [--input INPUT] [--output OUTPUT]
-                                        [--roi-preset {A,B,C,D,E,44,60,rpi cam}]
+                                        [--roi-preset {A1,A2,A3,A4,A5,B1,B2,B3,B4,B5}]
+                                        [--processing-height PROCESSING_HEIGHT]
                                         [--experiment-name EXPERIMENT_NAME]
                                         [--require-dvr-timestamps]
                                         [--no-annotated-video]
@@ -15,12 +16,17 @@ options:
                         config/CBAI_INPUT).
   --output OUTPUT       Base directory for analysis outputs (default:
                         config/CBAI_OUTPUT).
-  --roi-preset {A,B,C,D,E,44,60,rpi cam}
+  --roi-preset {A1,A2,A3,A4,A5,B1,B2,B3,B4,B5}
                         ROI preset to use for this run. Default: ROI in
-                        src/config.py (currently preset 44).
+                        src/config.py (currently preset A1).
+  --processing-height PROCESSING_HEIGHT
+                        Resize frames to this height (e.g. 720, 480, 360)
+                        inside the pipeline before motion extraction; the
+                        original video is not changed. Default: native
+                        resolution.
   --experiment-name EXPERIMENT_NAME
                         Name of the output subdirectory (default:
-                        brush_index_v6).
+                        brush_activity_index).
   --require-dvr-timestamps
                         Skip files that do not contain usable DVR timestamps.
   --no-annotated-video  Do not write annotated video outputs.

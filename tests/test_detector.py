@@ -46,17 +46,17 @@ class RoiTests(unittest.TestCase):
 
     def test_reference_size_applied_without_resizing(self):
         frame = np.zeros((1080, 1920, 3), np.uint8)
-        polygon = config.ROI_ALL["B"]
+        polygon = config.ROI_ALL["A2"]
         with patch.object(bri, "PROCESSING_HEIGHT", None):
             out, scaled = bri.prepare_analysis_frame(frame, polygon, (1280, 720))
         self.assertEqual(out.shape[:2], (1080, 1920))
         np.testing.assert_array_equal(scaled, np.rint(polygon * 1.5).astype(np.int32))
 
     def test_cli_preset_uses_its_reference_size(self):
-        args = bri.build_arg_parser().parse_args(["--roi-preset", "B", "--output", "/tmp/x"])
+        args = bri.build_arg_parser().parse_args(["--roi-preset", "A2", "--output", "/tmp/x"])
         ctx = bri.context_from_args(args)
         self.assertEqual(ctx.roi_reference_size, (1280, 720))
-        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["B"])
+        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["A2"])
         self.assertEqual(ctx.output_folder, os.path.join("/tmp/x", config.EXPERIMENT_NAME))
 
     def test_configured_custom_roi_used_without_cli_override(self):
@@ -67,9 +67,9 @@ class RoiTests(unittest.TestCase):
         self.assertIsNone(ctx.roi_reference_size)  # native video resolution
 
     def test_configured_preset_roi_gets_its_reference_size(self):
-        with patch.object(bri, "ROI", config.ROI_ALL["B"]), patch.object(bri, "ROI_REFERENCE_SIZE", None):
+        with patch.object(bri, "ROI", config.ROI_ALL["A2"]), patch.object(bri, "ROI_REFERENCE_SIZE", None):
             ctx = bri.context_from_args(bri.build_arg_parser().parse_args([]))
-        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["B"])
+        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["A2"])
         self.assertEqual(ctx.roi_reference_size, (1280, 720))
 
     def test_explicit_reference_size_for_custom_roi(self):
@@ -81,26 +81,26 @@ class RoiTests(unittest.TestCase):
     def test_cli_preset_overrides_configured_roi(self):
         custom = np.array([[10, 20], [10, 80], [90, 80], [90, 20]], np.int32)
         with patch.object(bri, "ROI", custom):
-            ctx = bri.context_from_args(bri.build_arg_parser().parse_args(["--roi-preset", "60"]))
-        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["60"])
+            ctx = bri.context_from_args(bri.build_arg_parser().parse_args(["--roi-preset", "B5"]))
+        np.testing.assert_array_equal(ctx.roi_polygon, config.ROI_ALL["B5"])
         self.assertEqual(ctx.roi_reference_size, (1920, 1080))
 
 
 class GeometryTests(unittest.TestCase):
     def test_native_resolution_no_resize(self):
-        geo = bri.build_analysis_geometry(1920, 1080, config.ROI_ALL["44"], (1920, 1080), None)
+        geo = bri.build_analysis_geometry(1920, 1080, config.ROI_ALL["B1"], (1920, 1080), None)
         self.assertIsNone(geo.target_size)
         frame = np.zeros((1080, 1920, 3), np.uint8)
         self.assertIs(geo.prepare(frame), frame)  # no copy
-        np.testing.assert_array_equal(geo.polygon, config.ROI_ALL["44"])
+        np.testing.assert_array_equal(geo.polygon, config.ROI_ALL["B1"])
 
     def test_never_upscales_or_copies_at_native_height(self):
         for target in (720, 1080):
-            geo = bri.build_analysis_geometry(1280, 720, config.ROI_ALL["B"], (1280, 720), target)
+            geo = bri.build_analysis_geometry(1280, 720, config.ROI_ALL["A2"], (1280, 720), target)
             self.assertIsNone(geo.target_size, target)
 
     def test_downscale_target_and_masks(self):
-        geo = bri.build_analysis_geometry(1920, 1080, config.ROI_ALL["44"], (1920, 1080), 360)
+        geo = bri.build_analysis_geometry(1920, 1080, config.ROI_ALL["B1"], (1920, 1080), 360)
         self.assertEqual(geo.target_size, (640, 360))
         self.assertEqual(geo.mask_color.shape, (360, 640, 3))
         self.assertEqual(geo.mask_gray.shape, (360, 640))
@@ -109,10 +109,10 @@ class GeometryTests(unittest.TestCase):
     def test_cached_masks_match_per_frame_masks(self):
         rng = np.random.default_rng(2)
         frame = rng.integers(0, 255, (360, 640, 3), dtype=np.uint8)
-        geo = bri.build_analysis_geometry(640, 360, config.ROI_ALL["B"], (1280, 720), None)
+        geo = bri.build_analysis_geometry(640, 360, config.ROI_ALL["A2"], (1280, 720), None)
         np.testing.assert_array_equal(
-            bri.preprocess_frame_for_white_legacy(frame, geo.polygon, geo.mask_color),
-            bri.preprocess_frame_for_white_legacy(frame, geo.polygon),
+            bri.preprocess_frame_for_white(frame, geo.polygon, geo.mask_color),
+            bri.preprocess_frame_for_white(frame, geo.polygon),
         )
 
 
@@ -143,7 +143,7 @@ class MidFileResolutionChangeTests(unittest.TestCase):
             "timestamp_source": "filename", "camera_id": None, "stream_id": None,
             "overlay_id": None, "length": 10,
         }
-        ctx = bri.RunContext(output_folder="unused", roi_polygon=config.ROI_ALL["B"],
+        ctx = bri.RunContext(output_folder="unused", roi_polygon=config.ROI_ALL["A2"],
                              roi_reference_size=(1280, 720),
                              save_roi_preview=False, show_roi_preview=False)
         with patch.object(bri.cv2, "VideoCapture", FakeCapture), \

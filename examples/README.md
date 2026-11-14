@@ -1,7 +1,6 @@
 # Examples
 
-This folder is intentionally lightweight. The repository does not version raw
-or annotated video files because they are large.
+Video files are not stored in the repository.
 
 - `input/` contains instructions for adding a local test video.
 - `output/` contains the output-report schema and instructions for local results.

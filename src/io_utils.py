@@ -163,12 +163,26 @@ def _build_datetime(date_obj, hour_val, minute_val, second_val, micro_val):
     )
 
 
+def median_positive_step(timestamps):
+    """Median positive interval between consecutive timestamps (timedelta), or None."""
+    steps = sorted(
+        (b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:]) if b > a
+    )
+    if not steps:
+        return None
+    mid = len(steps) // 2
+    median = steps[mid] if len(steps) % 2 else (steps[mid - 1] + steps[mid]) / 2
+    return timedelta(seconds=median)
+
+
 def reconstruct_dvr_timestamps(date_obj, time_fragments, fps):
     timestamps = []
 
     if not time_fragments:
         return timestamps
 
+    # Used only when a timestamp goes backwards: step forward by the last
+    # positive DVR interval seen, falling back to the container rate.
     frame_interval = timedelta(seconds=1.0 / fps) if fps > 0 else timedelta(seconds=1 / 30)
 
     for frag in time_fragments:
@@ -192,6 +206,8 @@ def reconstruct_dvr_timestamps(date_obj, time_fragments, fps):
 
             if timestamps and ts < timestamps[-1]:
                 ts = timestamps[-1] + frame_interval
+            elif timestamps and ts > timestamps[-1]:
+                frame_interval = ts - timestamps[-1] if (ts - timestamps[-1]).total_seconds() < 1 else frame_interval
 
             timestamps.append(ts)
 
@@ -306,16 +322,15 @@ def get_video_timestamps_and_ids(video_path, fps, total_frames, allow_relative_t
         if len(timestamps) >= total_frames:
             timestamps = timestamps[:total_frames]
         else:
-            print(
-                f"Warning: DVR timestamps shorter than frame count "
-                f"({len(timestamps)} < {total_frames}) in {os.path.basename(video_path)}"
-            )
-            if len(timestamps) >= 2:
-                step = timestamps[-1] - timestamps[-2]
-                if step.total_seconds() <= 0:
-                    step = timedelta(seconds=1 / max(fps, 1e-6))
-            else:
-                step = timedelta(seconds=1 / max(fps, 1e-6))
+            # The DVR stream commonly lacks the timestamp of the last frame; a
+            # shortfall of one frame is expected and not reported.
+            if total_frames - len(timestamps) > 1:
+                print(
+                    f"Warning: DVR timestamps shorter than frame count "
+                    f"({len(timestamps)} < {total_frames}) in {os.path.basename(video_path)}"
+                )
+            # Extend on the DVR clock, not the container frame rate.
+            step = median_positive_step(timestamps) or timedelta(seconds=1 / max(fps, 1e-6))
 
             extended = list(timestamps)
             while len(extended) < total_frames:
@@ -332,7 +347,10 @@ def get_video_timestamps_and_ids(video_path, fps, total_frames, allow_relative_t
 
     fname = parse_timestamp_from_filename(os.path.basename(video_path))
     if fname:
-        print(f"Using filename timestamps: {os.path.basename(video_path)}")
+        print(
+            f"Using filename timestamps (no DVR stream; frame times at the container "
+            f"rate of {fps:.3f} fps): {os.path.basename(video_path)}"
+        )
         return {
             "timestamps": build_timestamps_from_start(fname, fps, total_frames),
             "camera_id": None,
@@ -407,14 +425,8 @@ def get_clip_start_info(video_path, allow_relative_time=False, require_dvr=None)
     # Estimate sampling rate from independent DVR timestamps, not container FPS.
     # Filename-based timing remains an assumption and is labeled accordingly.
     timestamps = ts_info["timestamps"]
-    if ts_info["timestamp_source"] == "dvr" and len(timestamps) >= 2:
-        deltas = [(b - a).total_seconds() for a, b in zip(timestamps, timestamps[1:])]
-        valid = sorted(dt for dt in deltas if dt > 0)
-        mid = len(valid) // 2
-        median_dt = (valid[mid] if len(valid) % 2 else (valid[mid - 1] + valid[mid]) / 2) if valid else 0
-        actual_fps = 1 / median_dt if median_dt > 0 else basic["fps"]
-    else:
-        actual_fps = basic["fps"]
+    step = median_positive_step(timestamps) if ts_info["timestamp_source"] == "dvr" else None
+    actual_fps = 1 / step.total_seconds() if step else basic["fps"]
 
     return {
         "actual_fps": actual_fps,

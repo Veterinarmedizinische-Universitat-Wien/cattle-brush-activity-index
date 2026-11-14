@@ -13,29 +13,41 @@ import numpy as np
 # EXPERIMENT LABEL
 # ============================================================
 
-EXPERIMENT_NAME = "brush_index_v6"
+EXPERIMENT_NAME = "brush_activity_index"
 
 # ============================================================
 # ROI PRESETS
 # ============================================================
+# Brush ROI polygons (x, y) of the ten evaluation recordings, as used for the
+# published results. Farm A polygons were drawn on 1280 x 720 frames, Farm B
+# polygons on 1920 x 1080 frames (see ROI_REFERENCE_SIZES). For other cameras,
+# set ROI below to your own np.int32 polygon and check the saved ROI preview.
 
 ROI_ALL = {
-    #"A":  np.array([[740,500],[780,630],[940,540],[900,430]], dtype=np.int32),
-    "A":  np.array([[740,510],[770,620],[920,540],[880,450]], dtype=np.int32),    # 27-07-2024
-    #"B":  np.array([[380,320],[450,420],[580,350],[530,245]], dtype=np.int32),
-    "B":  np.array([[435,270],[470,370],[640,310],[600,210]], dtype=np.int32),    # 27-07-2024
-    #"C":  np.array([[590,190],[530,280],[670,360],[720,270]], dtype=np.int32),
-    "C":  np.array([[600,130],[590,230],[750,240],[760,140]], dtype=np.int32),    # 27-07-2024
-    #"D":  np.array([[820,190],[780,290],[920,360],[960,250]], dtype=np.int32),
-    "D":  np.array([[900,110],[860,210],[1000,280],[1040,170]], dtype=np.int32),  # 27-07-2024
-    "E":  np.array([[660,300],[640,420],[790,440],[810,350]], dtype=np.int32),
-    "44": np.array([[700, 60],[700,180],[1210,180],[1210, 60]], dtype=np.int32),
-    "60": np.array([[1210,170],[1210, 50],[1600,170],[1600,290]], dtype=np.int32),
-    "rpi cam": np.array([[500,200],[500,230],[650,230],[650,200]], dtype=np.int32),
+    # Farm A (Lely Luna), 25.04.2024
+    "A1": np.array([[740, 510], [770, 620], [920, 540], [880, 450]], dtype=np.int32),   # Pen 1, brush A
+    "A2": np.array([[380, 320], [450, 420], [580, 350], [530, 245]], dtype=np.int32),   # Pen 1, brush B
+    "A3": np.array([[820, 190], [780, 290], [920, 360], [960, 250]], dtype=np.int32),   # Pen 2, brush A
+    "A4": np.array([[590, 190], [530, 280], [670, 360], [720, 270]], dtype=np.int32),   # Pen 2, brush B
+    "A5": np.array([[660, 300], [640, 420], [790, 440], [810, 350]], dtype=np.int32),   # Pen 3
+    # Farm B (DeLaval swinging brush)
+    "B1": np.array([[700, 60], [700, 180], [1210, 180], [1210, 60]], dtype=np.int32),   # brush A, 16.11.2024
+    "B2": np.array([[700, 60], [700, 180], [1210, 180], [1210, 60]], dtype=np.int32),   # brush A, 01.02.2025
+    "B3": np.array([[1210, 170], [1210, 50], [1600, 170], [1600, 290]], dtype=np.int32),  # brush B, 01.02.2025
+    "B4": np.array([[700, 60], [700, 180], [1210, 180], [1210, 60]], dtype=np.int32),   # brush A, 17.05.2025
+    "B5": np.array([[1210, 170], [1210, 50], [1600, 170], [1600, 290]], dtype=np.int32),  # brush B, 17.05.2025
 }
+
+# Frame size (width, height) on which each preset was drawn. Polygons are scaled
+# from this size to the analysed frame.
+ROI_REFERENCE_SIZES = {
+    **{k: (1280, 720) for k in ("A1", "A2", "A3", "A4", "A5")},
+    **{k: (1920, 1080) for k in ("B1", "B2", "B3", "B4", "B5")},
+}
+
 # Active ROI: a preset from ROI_ALL or a custom np.int32 polygon.
 # The --roi-preset command-line option overrides this for a single run.
-ROI = ROI_ALL["44"]
+ROI = ROI_ALL["A1"]
 
 # ============================================================
 # SETTINGS
@@ -47,9 +59,6 @@ FRAME_SKIP_ANNOTATION = 3
 # resize frames inside the pipeline before motion extraction (in-pipeline
 # downscaling, as in the resolution benchmark); validate detection first.
 PROCESSING_HEIGHT = None
-# Frame size (width, height) in which each ROI preset was drawn. ROI polygons are
-# scaled from this size to the processed frame size.
-ROI_REFERENCE_SIZES = {"A": (1280,720), "B": (1280,720), "C": (1280,720), "D": (1280,720), "E": (1280,720), "44": (1920,1080), "60": (1920,1080), "rpi cam": (1280,720)}
 # Reference size (width, height) for the active ROI.
 # None = automatic: a preset uses its entry in ROI_REFERENCE_SIZES; a custom
 # polygon is taken to be in each video's native resolution. Set a tuple only for
@@ -82,11 +91,11 @@ ROBUST_NORM_LOW_PCT = 5
 ROBUST_NORM_HIGH_PCT = 95
 USE_LOG_COMPRESSION = True
 
-# Legacy-style adaptive segment logic (on normalized signal)
-LEGACY_SEGMENT_MINUTES = 10
-LEGACY_SEGMENT_MAX_SWITCH = 0.90
-LEGACY_LOW_PCT = 0.62
-LEGACY_HIGH_PCT = 0.50
+# Adaptive segment threshold (on the normalized signal)
+SEGMENT_MINUTES = 10
+SEGMENT_HIGH_MOTION_REF = 0.90
+LOW_MOTION_MULTIPLIER = 0.62
+HIGH_MOTION_MULTIPLIER = 0.50
 
 # Robust threshold reference
 THRESHOLD_REF_PERCENTILE = 99.5
@@ -107,11 +116,11 @@ CLIP_JOIN_MAX_GAP_SECONDS = 2.0
 MIN_BOUT_SECONDS = 4
 MAX_BOUT_SECONDS = 2000
 
-# Legacy-style post-filters in normalized units
-LEGACY_PIXEL_THRESHOLD_LOW = 0.26
-LEGACY_PIXEL_THRESHOLD_HIGH = 0.40
-LEGACY_CONTEXT_WINDOW_MINUTES = 4
-LEGACY_CONTEXT_MAX_PIXEL = 0.45
+# Post-processing filters (normalized signal units)
+PIXEL_THRESHOLD_LOW = 0.26
+PIXEL_THRESHOLD_HIGH = 0.40
+CONTEXT_WINDOW_MINUTES = 4
+CONTEXT_MAX_PIXEL = 0.45
 
 # Merge nearby bouts to reduce fragmentation
 MERGE_CLOSE_BOUTS = True

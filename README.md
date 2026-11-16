@@ -74,6 +74,28 @@ Written to `<output>/<experiment name>/` as UTF-8 CSV:
 plus hourly plots (`plots/`), ROI previews (`previews/`) and optional annotated
 videos (`annotated_videos/`). Use `Bout End − Bout Start` for bout durations.
 
+## Test with sample data
+
+Two sample clips are available in the
+[Phaidra collection](https://phaidra.vetmeduni.ac.at/o:5665):
+
+| Sample | File | Recording | Preset |
+|---|---|---|---|
+| 1 | `Event20240425012030-012900.mp4` ([doi:10.34876/8vtf-v892](https://doi.org/10.34876/8vtf-v892)) | Farm A, pen 1, brush B, 25.04.2024 01:20:30–01:29:00 | `A2` |
+| 2 | `Cam-60-17.05.2025-005200-005955.mp4` ([doi:10.34876/nw8b-gk75](https://doi.org/10.34876/nw8b-gk75)) | Farm B, brush B, 17.05.2025 00:52:00–00:59:55 | `B5` |
+
+Put each clip in its own folder and run:
+
+```bash
+python src/brush_rotation_activity_index.py --input sample1 --output results --roi-preset A2
+python src/brush_rotation_activity_index.py --input sample2 --output results_sample2 --roi-preset B5
+```
+
+Sample 1 was cut from three DVR clips and, to reduce its size, re-encoded
+keeping every third frame (8.33 fps). It has no DVR timestamp stream; frame
+times come from the file name at 8.33 fps, so bout times are correct. The clock
+in its top-left corner shows the DVR time of each frame.
+
 ## Repository layout
 
 ```text

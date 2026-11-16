@@ -26,7 +26,7 @@ EXPERIMENT_NAME = "brush_activity_index"
 ROI_ALL = {
     # Farm A (Lely Luna), 25.04.2024
     "A1": np.array([[740, 510], [770, 620], [920, 540], [880, 450]], dtype=np.int32),   # Pen 1, brush A
-    "A2": np.array([[380, 320], [450, 420], [580, 350], [530, 245]], dtype=np.int32),   # Pen 1, brush B
+    "A2": np.array([[380, 320], [450, 420], [580, 350], [530, 245]], dtype=np.int32),   # Pen 1, brush B, ####################  (Phaidra sample video 1)##########################
     "A3": np.array([[820, 190], [780, 290], [920, 360], [960, 250]], dtype=np.int32),   # Pen 2, brush A
     "A4": np.array([[590, 190], [530, 280], [670, 360], [720, 270]], dtype=np.int32),   # Pen 2, brush B
     "A5": np.array([[660, 300], [640, 420], [790, 440], [810, 350]], dtype=np.int32),   # Pen 3
@@ -35,7 +35,7 @@ ROI_ALL = {
     "B2": np.array([[700, 60], [700, 180], [1210, 180], [1210, 60]], dtype=np.int32),   # brush A, 01.02.2025
     "B3": np.array([[1210, 170], [1210, 50], [1600, 170], [1600, 290]], dtype=np.int32),  # brush B, 01.02.2025
     "B4": np.array([[700, 60], [700, 180], [1210, 180], [1210, 60]], dtype=np.int32),   # brush A, 17.05.2025
-    "B5": np.array([[1210, 170], [1210, 50], [1600, 170], [1600, 290]], dtype=np.int32),  # brush B, 17.05.2025
+    "B5": np.array([[1210, 170], [1210, 50], [1600, 170], [1600, 290]], dtype=np.int32),  # brush B, 17.05.2025, ####################  (Phaidra sample video 2)##########################
 }
 
 # Frame size (width, height) on which each preset was drawn. Polygons are scaled
